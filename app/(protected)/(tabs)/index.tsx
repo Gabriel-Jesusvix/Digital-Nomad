@@ -1,10 +1,13 @@
-import { Text, View } from "react-native";
+import { Box } from "@/src/components/Box";
+import { Text } from "@/src/components/Text";
+import { useAppTheme } from "@/src/theme/useAppTheme";
 
 
 export default function HomeScreen() {
+  const { } = useAppTheme()
   return (
-    <View>
+    <Box>
       <Text>Home Screen</Text>
-    </View>
+    </Box>
   );
 }
