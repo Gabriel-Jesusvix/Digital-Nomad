@@ -1,5 +1,6 @@
 import { CityCard } from "@/src/components/CityCard";
 import { Screen } from "@/src/components/Screen";
+import { CityFilter } from "@/src/containers/CityFilter";
 import { cityPreviewList } from "@/src/data/cities";
 import { useAppTheme } from "@/src/theme/useAppTheme";
 import { CityPreview } from "@/src/types";
@@ -33,6 +34,7 @@ export default function HomeScreen() {
         data={cityPreviewList}
         renderItem={renderItem}
         keyExtractor={item => item.id}
+        ListHeaderComponent={<CityFilter />}
       />
     </Screen>
   );
