@@ -1,16 +1,26 @@
+import { Box } from "@/src/components/Box";
 import { CityCard } from "@/src/components/CityCard";
 import { Screen } from "@/src/components/Screen";
 import { CityFilter } from "@/src/containers/CityFilter";
-import { cityPreviewList } from "@/src/data/cities";
+import { categories } from "@/src/data/categories";
+import { useCities } from "@/src/data/useCities";
 import { useAppTheme } from "@/src/theme/useAppTheme";
 import { CityPreview } from "@/src/types";
 import { useScrollToTop } from "@react-navigation/native";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { FlatList, ListRenderItemInfo } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 
 export default function HomeScreen() {
+  const [cityName, setCityName] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+
+  const { cityPreviewList } = useCities({
+    categoryId: selectedCategoryId,
+    name: cityName
+  })
+
   const { spacing } = useAppTheme()
   const { top } = useSafeAreaInsets()
   const flatListRef = useRef(null)
@@ -18,11 +28,15 @@ export default function HomeScreen() {
 
   function renderItem({ item }: ListRenderItemInfo<CityPreview>) {
     return (
-      <CityCard cityPreview={item} />
+      <Box paddingHorizontal="padding">
+        <CityCard cityPreview={item} />
+      </Box>
     )
   }
   return (
-    <Screen>
+    <Screen
+      style={{ paddingHorizontal: 0 }}
+    >
       <FlatList
         ref={flatListRef}
         showsVerticalScrollIndicator={false}
@@ -34,7 +48,15 @@ export default function HomeScreen() {
         data={cityPreviewList}
         renderItem={renderItem}
         keyExtractor={item => item.id}
-        ListHeaderComponent={<CityFilter />}
+        ListHeaderComponent={
+          <CityFilter
+            categories={categories}
+            cityName={cityName}
+            onChangeCityName={setCityName}
+            selectedCategoryId={selectedCategoryId}
+            onChangeSelectedCategoryId={setSelectedCategoryId}
+          />
+        }
       />
     </Screen>
   );

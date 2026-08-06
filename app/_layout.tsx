@@ -2,6 +2,7 @@ import theme from "@/src/theme/theme";
 import { ThemeProvider } from "@shopify/restyle";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
+import { StatusBar } from "react-native";
 import "react-native-reanimated";
 
 
@@ -40,6 +41,7 @@ export default function RootLayout() {
         <Stack.Screen name="+not-found" />
         <Stack.Screen name="sign-in" />
       </Stack>
+      <StatusBar barStyle="light-content" />
     </ThemeProvider>
   );
 }
