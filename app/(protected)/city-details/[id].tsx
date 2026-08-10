@@ -1,6 +1,11 @@
+import { Divider } from "@/src/components/Divider";
 import { Screen } from "@/src/components/Screen";
 import { Text } from "@/src/components/Text";
 import { CityDetailsHeader } from "@/src/containers/CityDetailsHeader";
+import { CityDetailsInfo } from "@/src/containers/CityDetailsInfo";
+import { CityDetailsMap } from "@/src/containers/CityDetailsMap";
+import { CityDetailsRelatedCities } from "@/src/containers/CityDetailsRelatedCities";
+import { CityDetailsTouristAttractions } from "@/src/containers/CityDetailsTouristAttractions";
 import { useCityDetails } from "@/src/data/useCityDetails";
 import { useLocalSearchParams } from "expo-router";
 
@@ -19,12 +24,30 @@ export default function CityDetails() {
   return (
     <Screen
       style={{ paddingHorizontal: 0 }}
+      scrollable
     >
       <CityDetailsHeader
         categories={city.categories}
         coverImage={city.coverImage}
         id={city.id}
       />
+
+      <CityDetailsInfo
+        name={city.name}
+        country={city.country}
+        description={city.description}
+      />
+
+      <Divider paddingHorizontal="padding" />
+      <CityDetailsTouristAttractions
+        touristAttractions={city.touristAttractions}
+      />
+
+      <Divider paddingHorizontal="padding" />
+      <CityDetailsMap />
+
+      <Divider paddingHorizontal="padding" />
+      <CityDetailsRelatedCities />
     </Screen>
   );
 }
