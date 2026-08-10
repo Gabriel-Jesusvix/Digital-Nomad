@@ -1,15 +1,29 @@
 import { Screen } from "@/src/components/Screen";
+import { Text } from "@/src/components/Text";
 import { CityDetailsHeader } from "@/src/containers/CityDetailsHeader";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useCityDetails } from "@/src/data/useCityDetails";
+import { useLocalSearchParams } from "expo-router";
 
 export default function CityDetails() {
-  const router = useRouter();
-  const { id, name } = useLocalSearchParams();
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const city = useCityDetails(id)
+
+  if (!city) {
+    return (
+      <Screen flex={1} justifyContent="center" alignItems="center">
+        <Text>City not found</Text>
+      </Screen>
+    )
+  }
 
   return (
-    <Screen>
+    <Screen
+      style={{ paddingHorizontal: 0 }}
+    >
       <CityDetailsHeader
-        cityName={name}
+        categories={city.categories}
+        coverImage={city.coverImage}
+        id={city.id}
       />
     </Screen>
   );
