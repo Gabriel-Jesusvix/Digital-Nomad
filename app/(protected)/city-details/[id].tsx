@@ -44,7 +44,7 @@ export default function CityDetails() {
       />
 
       <Divider paddingHorizontal="padding" />
-      <CityDetailsMap />
+      <CityDetailsMap location={city.location} />
 
       <Divider paddingHorizontal="padding" />
       <CityDetailsRelatedCities />
