@@ -1,6 +1,6 @@
-import { CityPreview } from "../types";
+import { useFetchData } from "../data/useFetchData";
+import { supabaseService } from "../supabase/supabaseService";
 
-export function useRelatedCities(cityId: string): CityPreview[] {
-  // return cities.filter((city) => relatedCitiesIds.includes(city.id));
-  return [];
+export function useRelatedCities(cityId: string) {
+  return useFetchData(() => supabaseService.getRelatedCities(cityId))
 }
