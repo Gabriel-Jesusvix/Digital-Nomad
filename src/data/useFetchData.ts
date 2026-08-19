@@ -7,7 +7,8 @@ type UseFetchDataReturn<DataT> = {
 };
 
 export function useFetchData<DataT>(
-  fetchData: () => Promise<DataT>
+  fetchData: () => Promise<DataT>,
+  dependencies: React.DependencyList = []
 ): UseFetchDataReturn<DataT> {
   const [data, setData] = useState<DataT>();
   const [isLoading, setIsLoading] = useState(true);
@@ -28,7 +29,8 @@ export function useFetchData<DataT>(
 
   useEffect(() => {
     _fetchData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dependencies]);
 
   return {
     data,

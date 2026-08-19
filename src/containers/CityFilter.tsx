@@ -5,7 +5,7 @@ import { SearchInput } from "../components/SearchInput";
 import { Category } from "../types";
 
 type CityFilterProps = {
-  categories: Category[]
+  categories?: Category[]
   cityName: string;
   onChangeCityName: (name: string) => void;
   selectedCategoryId: string | null;
@@ -28,7 +28,7 @@ export function CityFilter({ categories, cityName, onChangeCityName, selectedCat
           paddingHorizontal="padding"
         >
           {
-            categories.map((category) => (
+            categories?.map((category) => (
               <CategoryPill
                 key={category.id}
                 active={category.id === selectedCategoryId}
