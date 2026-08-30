@@ -1,10 +1,9 @@
-import { Category, CategoryCode } from "../domain/category/Category";
-import { City, CityPreview } from "../domain/city/City";
-import { ICityRepository } from "../domain/city/ICityRepository";
+import { City, CityPreview } from "@/src/domain/city/City";
 import { supabase } from "./supabase";
 import { supabaseAdapter } from "./supabaseAdapter";
+import { ICityRepository } from "@/src/domain/city/ICityRepository";
 
-const storageURL = process.env.EXPO_PUBLIC_SUPABASE_STORAGE_URL;
+export const storageURL = process.env.EXPO_PUBLIC_SUPABASE_STORAGE_URL;
 
 export type CityFilters = {
   name?: string;
@@ -42,19 +41,7 @@ async function findAll(filters: CityFilters): Promise<CityPreview[]> {
   }
 }
 
-async function listCategory(): Promise<Category[]> {
-  const { data, error } = await supabase.from("categories").select("*");
-  if (error) {
-    throw new Error("error trying to list categories");
-  }
 
-  return data.map((row) => ({
-    id: row.id,
-    description: row.description,
-    name: row.name,
-    code: row.code as CategoryCode,
-  }));
-}
 
 async function findById(id: string): Promise<City> {
   const { data, error } = await supabase
@@ -80,7 +67,7 @@ async function getRelatedCities(cityId: string): Promise<CityPreview[]> {
   return data.map(supabaseAdapter.toCityPreview);
 }
 
-export const supabaseCityRepo: ICityRepository = {
+export const SupabaseCityRepository: ICityRepository = {
   findAll,
   findById,
   getRelatedCities,

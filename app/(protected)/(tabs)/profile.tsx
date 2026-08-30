@@ -1,5 +1,5 @@
-import { Box } from "@/src/components/Box";
-import { Text } from "@/src/components/Text";
+import { Box } from "@/src/ui/components/Box";
+import { Text } from "@/src/ui/components/Text";
 
 export default function Profile() {
   return (

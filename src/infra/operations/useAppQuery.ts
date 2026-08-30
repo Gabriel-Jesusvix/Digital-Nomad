@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 
-type UseFetchDataReturn<DataT> = {
+type UseAppQueryReturn<DataT> = {
   data?: DataT;
   isLoading: boolean;
   error: unknown;
 };
 
-export function useFetchData<DataT>(
+export function useAppQuery<DataT>(
   fetchData: () => Promise<DataT>,
   dependencies: React.DependencyList = []
-): UseFetchDataReturn<DataT> {
+): UseAppQueryReturn<DataT> {
   const [data, setData] = useState<DataT>();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);

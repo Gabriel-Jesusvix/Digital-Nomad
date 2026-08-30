@@ -4,8 +4,8 @@ import { Box } from "../components/Box";
 import { CityCard } from "../components/CityCard";
 import { Text } from "../components/Text";
 import { useAppTheme } from "../theme/useAppTheme";
-import { City } from "../domain/city/City";
-import { useGetRelatedCities } from "../domain/city/useCases/useGetRelatedCities";
+import { City } from "@/src/domain/city/City";
+import { useGetRelatedCities } from "@/src/domain/city/useCases/useGetRelatedCities";
 
 
 type Props = Pick<City, "id">;
