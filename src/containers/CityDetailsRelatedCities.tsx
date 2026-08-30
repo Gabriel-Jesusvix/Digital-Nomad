@@ -3,15 +3,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Box } from "../components/Box";
 import { CityCard } from "../components/CityCard";
 import { Text } from "../components/Text";
-import { useRelatedCities } from "../hooks/useRelatedCities";
 import { useAppTheme } from "../theme/useAppTheme";
-import { City } from "../types";
+import { City } from "../domain/city/City";
+import { useGetRelatedCities } from "../domain/city/useCases/useGetRelatedCities";
 
 
 type Props = Pick<City, "id">;
 
 export function CityDetailsRelatedCities({ id }: Props) {
-  const { data: cities, } = useRelatedCities(id);
+  const { data: cities, } = useGetRelatedCities(id);
 
   const { spacing } = useAppTheme();
   const { bottom } = useSafeAreaInsets();

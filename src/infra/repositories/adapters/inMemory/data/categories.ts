@@ -1,4 +1,4 @@
-import { Category } from "../types";
+import { Category } from "@/src/domain/category/Category";
 
 export const categories: Category[] = [
   {
