@@ -5,13 +5,13 @@ import { CityFilter } from "@/src/ui/containers/CityFilter";
 import { useCategoryFindAll } from "@/src/domain/category/useCases/useCategoryFindAll";
 import { CityPreview } from "@/src/domain/city/City";
 import { useCityFindAll } from "@/src/domain/city/useCases/useCityFindAll";
-import { useDebounce } from "@/src/hooks/useDebounce";
 import { useAppTheme } from "@/src/ui/theme/useAppTheme";
 import { useScrollToTop } from "@react-navigation/native";
 import { useRef, useState } from "react";
 import { ListRenderItemInfo } from "react-native";
 import Animated, { FadingTransition } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useDebounce } from "@/src/utils/hooks/useDebounce";
 
 export default function HomeScreen() {
   const { spacing } = useAppTheme();
