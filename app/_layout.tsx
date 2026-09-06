@@ -1,3 +1,4 @@
+import { AuthProvider } from "@/src/domain/Auth/AuthContext";
 import { InMemoryRepository } from "@/src/infra/repositories/adapters/inMemory";
 import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase";
 import { RepositoryProvider } from "@/src/infra/repositories/RepositoryProvider";
@@ -40,26 +41,27 @@ export default function RootLayout() {
   }
 
   return (
-    <FeedbackProvider value={AlertFeedback}>
-      <RepositoryProvider
-        value={InMemoryRepository}
-      >
-        <ThemeProvider theme={theme}>
-          <Stack
-            screenOptions={{
-              contentStyle: { backgroundColor: theme.colors.background },
-              headerShown: false,
-              fullScreenGestureEnabled: true,
-            }}
-          >
-            <Stack.Screen name="(protected)" options={{ headerShown: false }} />
-            <Stack.Screen name="+not-found" />
-            <Stack.Screen name="sign-in" />
-          </Stack>
-          <StatusBar barStyle="light-content" />
-        </ThemeProvider>
-      </RepositoryProvider>
-    </FeedbackProvider>
-
+    <AuthProvider>
+      <FeedbackProvider value={AlertFeedback}>
+        <RepositoryProvider
+          value={InMemoryRepository}
+        >
+          <ThemeProvider theme={theme}>
+            <Stack
+              screenOptions={{
+                contentStyle: { backgroundColor: theme.colors.background },
+                headerShown: false,
+                fullScreenGestureEnabled: true,
+              }}
+            >
+              <Stack.Screen name="(protected)" options={{ headerShown: false }} />
+              <Stack.Screen name="+not-found" />
+              <Stack.Screen name="sign-in" />
+            </Stack>
+            <StatusBar barStyle="light-content" />
+          </ThemeProvider>
+        </RepositoryProvider>
+      </FeedbackProvider>
+    </AuthProvider>
   );
 }
