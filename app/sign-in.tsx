@@ -22,6 +22,7 @@ export default function SignInScreen() {
           value={email}
           onChangeText={setEmail}
           placeholder="seu email"
+          autoCapitalize="none"
         />
         <TextInput
           style={styles.input}

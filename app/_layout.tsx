@@ -4,6 +4,8 @@ import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase
 import { RepositoryProvider } from "@/src/infra/repositories/RepositoryProvider";
 import { AlertFeedback } from "@/src/infra/services/feedback/adapters/Alert/AlertFeedback";
 import { FeedbackProvider } from "@/src/infra/services/feedback/FeedbackProvider";
+import { AsyncStorage } from "@/src/infra/services/storage/adapters/AsyncStorage";
+import { StorageProvider } from "@/src/infra/services/storage/StorageContext";
 import theme from "@/src/ui/theme/theme";
 import { ThemeProvider } from "@shopify/restyle";
 import { useFonts } from "expo-font";
@@ -41,27 +43,29 @@ export default function RootLayout() {
   }
 
   return (
-    <AuthProvider>
-      <FeedbackProvider value={AlertFeedback}>
-        <RepositoryProvider
-          value={InMemoryRepository}
-        >
-          <ThemeProvider theme={theme}>
-            <Stack
-              screenOptions={{
-                contentStyle: { backgroundColor: theme.colors.background },
-                headerShown: false,
-                fullScreenGestureEnabled: true,
-              }}
-            >
-              <Stack.Screen name="(protected)" options={{ headerShown: false }} />
-              <Stack.Screen name="+not-found" />
-              <Stack.Screen name="sign-in" />
-            </Stack>
-            <StatusBar barStyle="light-content" />
-          </ThemeProvider>
-        </RepositoryProvider>
-      </FeedbackProvider>
-    </AuthProvider>
+    <StorageProvider storage={AsyncStorage}>
+      <AuthProvider>
+        <FeedbackProvider value={AlertFeedback}>
+          <RepositoryProvider
+            value={InMemoryRepository}
+          >
+            <ThemeProvider theme={theme}>
+              <Stack
+                screenOptions={{
+                  contentStyle: { backgroundColor: theme.colors.background },
+                  headerShown: false,
+                  fullScreenGestureEnabled: true,
+                }}
+              >
+                <Stack.Screen name="(protected)" options={{ headerShown: false }} />
+                <Stack.Screen name="+not-found" />
+                <Stack.Screen name="sign-in" />
+              </Stack>
+              <StatusBar barStyle="light-content" />
+            </ThemeProvider>
+          </RepositoryProvider>
+        </FeedbackProvider>
+      </AuthProvider>
+    </StorageProvider>
   );
 }

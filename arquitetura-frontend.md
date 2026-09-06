@@ -300,7 +300,7 @@ Vale revisitar os dois sempre que a pergunta for "vale a pena um Repository aqui
 
 ## Prática — projetos para aplicar
 
-Três projetos pequenos, em ordem crescente de complexidade, para treinar os mesmos padrões em código novo (sem copiar deste app):
+Quatro projetos pequenos, em ordem crescente de complexidade, para treinar os mesmos padrões em código novo (sem copiar deste app):
 
 **1. Lista de tarefas com dois backends**
 Objetivo: sentir o valor do DIP na prática. Um Todo app com `ITaskRepository`, um adapter `InMemory`/`AsyncStorage` e um adapter real (Firebase, Supabase ou uma API própria).
@@ -316,6 +316,18 @@ Primeiro passo: modelar o domínio (`Conta`, `Transacao`, regra de saldo) sem ne
 Objetivo: múltiplos aggregates interagindo (`Produto`, `Carrinho`, `Pedido`) e uma mutação de verdade.
 Praticar: Command pattern no checkout (`CheckoutCommand`), testes de caso de uso com um repositório mock (validando a promessa "Repository facilita teste"), e uma versão simples do FeedbackService (aula 15) notificando sucesso/erro do pedido.
 Primeiro passo: escrever o `PlaceOrderCommand` e testá-lo com um `InMemoryOrderRepository`, antes de qualquer tela de carrinho.
+
+**4. App de lembretes com múltiplos canais de envio**
+Objetivo: praticar Ports & Adapters (seção 15) fora do contexto de dado — um `INotificationService` (`send`) com adapters reais (push local, e-mail, ou só um `ConsoleNotification` para dev), trocados via Context como o `IFeedbackService` daqui.
+Praticar: um `IReminderRepository` (CRUD dos lembretes) junto de um `INotificationService` totalmente independente — dois "ports" injetados no mesmo caso de uso, cada um trocável sem afetar o outro.
+Primeiro passo: escrever a interface `INotificationService` e dois adapters (`ConsoleNotification`, um real) antes de decidir qual biblioteca de push usar.
+
+### Outras formas de potencializar o aprendizado (sem começar um projeto novo)
+
+- **Trocar o backend deste próprio app** de Supabase para uma API própria (ou vice-versa), sem tocar em nenhuma tela — é o teste real de que o DIP aqui implementado vale a pena.
+- **Escrever testes unitários** para um caso de uso (`useCityFindAll`, `useAuthSignIn`) usando um repositório mock, comprovando na prática a promessa "Repository facilita teste" (seção 3).
+- **Pegar um projeto existente** (seu ou de terceiros) que misture UI e acesso a dado no mesmo arquivo, e refatorar *só* a camada de dados para Repository — sem mudar a UI. Bom exercício de arquitetura incremental, sem reescrever do zero.
+- **Revisar código de outra pessoa** usando este documento como checklist: a interface está no lugar certo? o Context tem valor default seguro? existe mais de um adapter registrado, ou só um (sinal de que o desacoplamento ainda não foi testado de verdade)?
 
 ## Glossário
 
