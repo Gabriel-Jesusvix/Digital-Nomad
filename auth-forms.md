@@ -140,7 +140,57 @@ Regra geral: monte o composition root de fora pra dentro seguindo o grafo de dep
 
 ## 5. Componente TextInput
 
-*(placeholder)*
+**Status: implementado.** Wrapper de `RNTextInput` com label, borda reativa a foco/erro e slot de mensagem de erro — base de qualquer campo de formulário do módulo.
+
+```tsx
+export function TextInput({ label, errorMessage, ...textInputProps }: TextInputProps) {
+  const [isFocused, setIsFocused] = useState(false);
+  const borderColor = errorMessage ? "fbErrorSurface" : isFocused ? "text" : "gray1";
+
+  return (
+    <Box>
+      <Text variant="title14">{label}</Text>
+      <Box borderWidth={2} borderColor={borderColor} height={50}>
+        <RNTextInput
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          {...textInputProps}
+          style={{ height: "100%", width: "100%" /* ... */ }}
+        />
+      </Box>
+      <Text color="fbErrorSurface">{errorMessage}</Text>
+    </Box>
+  );
+}
+```
+
+### Capturar focus/blur (agnóstico de projeto)
+
+React Native não tem `:focus` de CSS — o padrão universal é: estado local booleano ligado a `onFocus`/`onBlur`, usado pra derivar estilo. Funciona em qualquer input customizado, qualquer lib de UI, qualquer plataforma.
+
+### Border: boa prática já aplicada aqui
+
+A **largura** da borda (`borderWidth: 2`) é constante nos três estados (default/foco/erro) — só a **cor** muda. Evita um bug clássico: mudar a largura no foco faz a caixa "pular" 1-2px, porque borda ocupa espaço de layout. Prioridade de cor também está certa — erro > foco > default, a mensagem de erro nunca some só porque o campo está focado.
+
+### Onde quebra com conteúdo/uso real — dois pontos concretos
+
+1. **`style` do consumidor é descartado silenciosamente.** `{...textInputProps}` é espalhado *antes* de um `style={{...}}` fixo — o `style` explícito, por vir depois, **sobrescreve** (não mescla) qualquer `style` que o chamador passe. Em `sign-in.tsx`, `style={styles.input}` hoje não faz nada — código morto. Correção padrão, portável pra qualquer wrapper de input nativo:
+   ```tsx
+   const { style, ...rest } = textInputProps;
+   <RNTextInput {...rest} style={[defaultStyle, style]} /> // array de estilos: RN mescla, o último vence
+   ```
+2. **Falta `forwardRef`.** O componente não encaminha `ref` pro `RNTextInput` interno — bloqueia focar o próximo campo ao apertar "next" no teclado (aula 14) e o React Hook Form focar o primeiro campo inválido após validar (aula 12). Sem isso, qualquer uma das duas features exige reescrever o componente depois:
+   ```tsx
+   export const TextInput = forwardRef<RNTextInput, TextInputProps>(
+     ({ label, errorMessage, ...props }, ref) => (/* ... <RNTextInput ref={ref} {...props} /> */)
+   );
+   ```
+
+### Outras boas práticas presentes
+
+- **Import nativo renomeado** (`RNTextInput`/`RNTextInputProps`) — o componente do projeto pode se chamar `TextInput` sem colidir com o import do React Native. Padrão limpo pra qualquer wrapper de componente nativo.
+- **Espaço da mensagem de erro sempre reservado** (o `Text` de erro renderiza mesmo vazio) — evita que o formulário "pule" de altura quando um erro aparece/some. Prática recomendada em qualquer formulário, intencional ou não aqui.
+- **Paleta de cores de feedback** (`fbErrorSurface`/`fbSuccessSurface`/`fbWarningSurface`/`fbInfoSurface`) entrou no tema pensando em reuso — os mesmos tokens devem servir tanto pra borda de erro do input quanto pro Toast da aula 17.
 
 ## 6. Componente Button
 
@@ -203,6 +253,9 @@ Regra geral: monte o composition root de fora pra dentro seguindo o grafo de dep
 | Ordem de Providers dependentes | `AuthProvider` usa `useStorage()` por dentro | `StorageProvider` envolve `AuthProvider` no composition root |
 | Splash Screen ligada à hidratação | Evitar tela em branco enquanto storage carrega | Implementado — `SplashScreen.hide()` só quando `isReady` |
 | Navegação dentro do domínio (`router.replace` em `AuthContext`) | — | Ponto em aberto, mesmo tipo de discussão do `IFeedbackService` |
+| Focus/blur em input customizado | Estilizar estado de foco sem `:focus` de CSS | Implementado (`onFocus`/`onBlur` + estado local) |
+| `style` mesclado vs. sobrescrito | Deixar o consumidor customizar o wrapper | Bug: `style` do chamador é descartado (sobrescrito, não mesclado) |
+| `forwardRef` em componente de input | Focar campo programaticamente (próximo campo, campo inválido) | Faltando — vai doer nas aulas 12 e 14 |
 
 ## Glossário
 
@@ -210,3 +263,5 @@ Regra geral: monte o composition root de fora pra dentro seguindo o grafo de dep
 - **Hidratação de sessão (session hydration):** processo assíncrono de carregar a sessão persistida antes de decidir se o usuário está logado; sem uma flag de "pronto", a UI decide cedo demais.
 - **Storage como Port genérico (`IStorage`):** em vez de uma interface por feature (`IAuthStorage`), uma única porta key-value reutilizável por qualquer parte do app que precise persistir algo.
 - **Ordem de composition root:** quando um Provider usa o hook de outro por dentro, ele precisa estar aninhado dentro do Provider do qual depende — a ordem reflete o grafo de dependência, não a ordem de criação dos módulos.
+- **`forwardRef`:** técnica do React para expor a instância/nó interno de um componente wrapper ao componente pai — essencial em inputs customizados que precisam ser focados programaticamente por fora.
+- **Style merge vs. override:** ao aceitar `style` via props num wrapper, usar array (`style={[default, style]}`) para mesclar; um `style={{...}}` fixo depois de um spread sempre sobrescreve, nunca mescla.

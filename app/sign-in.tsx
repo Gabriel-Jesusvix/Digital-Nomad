@@ -1,7 +1,8 @@
 import { useAuthSignIn } from "@/src/domain/Auth/operations/useAuthSignIn";
 import { Screen } from "@/src/ui/components/Screen";
+import { TextInput } from "@/src/ui/components/TextInput";
 import { useState } from "react";
-import { Button, StyleSheet, TextInput } from "react-native";
+import { Button, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SignInScreen() {
@@ -18,6 +19,7 @@ export default function SignInScreen() {
     <Screen>
       <SafeAreaView>
         <TextInput
+          label="E-mail"
           style={styles.input}
           value={email}
           onChangeText={setEmail}
@@ -25,6 +27,8 @@ export default function SignInScreen() {
           autoCapitalize="none"
         />
         <TextInput
+          label="Senha"
+          errorMessage="mensagem de erro"
           style={styles.input}
           value={password}
           onChangeText={setPassword}
