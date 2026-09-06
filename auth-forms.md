@@ -194,7 +194,111 @@ A **largura** da borda (`borderWidth: 2`) é constante nos três estados (defaul
 
 ## 6. Componente Button
 
-*(placeholder)*
+**Status: implementado.** Mapa de variantes tipado (`Record<Variant, Config>`) — o mesmo formato usado por shadcn/ui, Stitches etc., aqui aplicado ao Restyle:
+
+```tsx
+type ButtonVariant = "primary" | "secondary";
+
+const buttonColors: Record<ButtonVariant, { backgroundColor: ThemeColors; textColor: ThemeColors }> = {
+  primary: { backgroundColor: "primary", textColor: "text" },
+  secondary: { backgroundColor: "gray1", textColor: "text" },
+};
+
+export function Button({ title, onPress, variant = "primary", ...toProps }: ButtonProps) {
+  const buttonProps = buttonColors[variant];
+  return (
+    <TouchableOpacityBox {...toProps} onPress={onPress} backgroundColor={buttonProps.backgroundColor}>
+      <Text color={buttonProps.textColor}>{title}</Text>
+    </TouchableOpacityBox>
+  );
+}
+```
+
+### Por que `Record<Variant, Config>` (e não `if`/`switch`) — o motivo é o compilador
+
+`Record<ButtonVariant, Config>` obriga o objeto a ter **exatamente** uma entrada por valor do union — nem a mais, nem a menos. Isso vale em qualquer projeto TS, com ou sem lib de estilo:
+
+```ts
+type ButtonVariant = "primary" | "secondary" | "danger"; // adiciona "danger"
+
+const buttonColors: Record<ButtonVariant, Config> = {
+  primary: { /* ... */ },
+  secondary: { /* ... */ },
+  // ERRO de compilação: falta "danger" — TS avisa antes de rodar o app
+};
+```
+
+Um `if`/`switch` não avisa sozinho se um caso for esquecido, a menos que se adicione uma checagem manual de exaustividade (`never`):
+
+```ts
+function getButtonColors(variant: ButtonVariant): Config {
+  switch (variant) {
+    case "primary": return { /* ... */ };
+    case "secondary": return { /* ... */ };
+    default:
+      const _exhaustive: never = variant; // erro de compilação se sobrar algum caso
+      throw new Error(`variant não tratado: ${variant}`);
+  }
+}
+```
+
+O objeto entrega essa garantia de graça; o `switch` exige o truque `never` pra ter a mesma segurança — por isso a maioria das libs de UI usa objeto, não `if`/`switch`.
+
+### Generalizando, sem nenhuma lib de estilo
+
+Tirando o Restyle da equação, o formato do padrão é sempre este:
+
+```ts
+type VariantStyles<Variant extends string, Style> = Record<Variant, Style>;
+
+function resolveVariant<Variant extends string, Style>(
+  styles: VariantStyles<Variant, Style>,
+  variant: Variant
+): Style {
+  return styles[variant];
+}
+
+// com StyleSheet puro do React Native, zero Restyle:
+const buttonStyles: VariantStyles<"primary" | "secondary", ViewStyle> = {
+  primary: { backgroundColor: "blue" },
+  secondary: { backgroundColor: "gray" },
+};
+resolveVariant(buttonStyles, "primary"); // autocomplete + exaustividade, sem nenhuma lib de tema
+```
+
+É literalmente o que `class-variance-authority` (a lib por trás do shadcn/ui) faz por baixo dos panos: o `variants` de um `cva(...)` é um `Record` desse tipo — só que a lib devolve uma função que monta `className`, em vez de props de estilo.
+
+### Mais de um eixo de variante
+
+Quando aparece um segundo eixo (tamanho, por exemplo), duas formas de tipar — ambas agnósticas de lib:
+
+```ts
+// 1. Record aninhado — lê melhor na maioria dos casos
+const styles: Record<ButtonVariant, Record<"sm" | "md", Style>> = {
+  primary: { sm: { /* ... */ }, md: { /* ... */ } },
+  secondary: { sm: { /* ... */ }, md: { /* ... */ } },
+};
+
+// 2. chave composta via template literal type — evita aninhar quando os eixos interagem
+type Key = `${ButtonVariant}-${"sm" | "md"}`; // "primary-sm" | "primary-md" | "secondary-sm" | "secondary-md"
+const styles: Record<Key, Style> = { "primary-sm": { /* ... */ } /* ... */ };
+```
+
+### Nota (TS 4.9+): `satisfies` em vez de anotação direta
+
+```ts
+const buttonColors = {
+  primary: { backgroundColor: "primary", textColor: "text" },
+  secondary: { backgroundColor: "gray1", textColor: "text" },
+} satisfies Record<ButtonVariant, { backgroundColor: ThemeColors; textColor: ThemeColors }>;
+```
+
+Com `: Record<...>` direto, `buttonColors.primary.backgroundColor` fica widened pra `ThemeColors` (qualquer cor do tema). Com `satisfies`, o TS valida a mesma exaustividade (mesmo erro se faltar variante), mas preserva o tipo literal inferido (`"primary"`) — útil se código mais adiante quiser inferir a partir do valor exato.
+
+### O que o `Button` real ganha de graça, e o que falta
+
+- **Ganha de graça:** `ButtonProps` estende `TouchableOpacityBoxProps` (que já inclui as props de espaçamento do Restyle), então `mt="s20"` (usado em `sign-in.tsx`) passa direto pelo `...toProps` sem o `Button` precisar redeclarar nada — extensão de tipo em vez de repetição de props.
+- **Falta:** variante de `loading`/`disabled` — o botão de sign-in já tem `isLoading` disponível em `useAuthSignIn()` (aula 13) que ainda não é usado pra desabilitar o botão ou mostrar um spinner. Fica pra quando o formulário de verdade (aulas 11-12) entrar em cena.
 
 ## 7. Tela de Sign-in
 
@@ -256,6 +360,8 @@ A **largura** da borda (`borderWidth: 2`) é constante nos três estados (defaul
 | Focus/blur em input customizado | Estilizar estado de foco sem `:focus` de CSS | Implementado (`onFocus`/`onBlur` + estado local) |
 | `style` mesclado vs. sobrescrito | Deixar o consumidor customizar o wrapper | Bug: `style` do chamador é descartado (sobrescrito, não mesclado) |
 | `forwardRef` em componente de input | Focar campo programaticamente (próximo campo, campo inválido) | Faltando — vai doer nas aulas 12 e 14 |
+| `Record<Variant, Config>` para variantes | Exaustividade garantida pelo compilador, sem `if`/`switch` | Implementado no `Button` — mesma ideia do shadcn/ui e do `cva` |
+| Loading/disabled no Button | Feedback visual de mutation em andamento | Faltando — `isLoading` de `useAuthSignIn` ainda não é consumido |
 
 ## Glossário
 
@@ -265,3 +371,5 @@ A **largura** da borda (`borderWidth: 2`) é constante nos três estados (defaul
 - **Ordem de composition root:** quando um Provider usa o hook de outro por dentro, ele precisa estar aninhado dentro do Provider do qual depende — a ordem reflete o grafo de dependência, não a ordem de criação dos módulos.
 - **`forwardRef`:** técnica do React para expor a instância/nó interno de um componente wrapper ao componente pai — essencial em inputs customizados que precisam ser focados programaticamente por fora.
 - **Style merge vs. override:** ao aceitar `style` via props num wrapper, usar array (`style={[default, style]}`) para mesclar; um `style={{...}}` fixo depois de um spread sempre sobrescreve, nunca mescla.
+- **`Record<K, V>` para variantes:** força um valor por chave do union, sem faltar nem sobrar — exaustividade garantida em tempo de compilação, sem precisar do truque `never` que um `switch` exigiria.
+- **`satisfies` (TS 4.9+):** valida um objeto contra um tipo (mesma exaustividade de uma anotação `: Tipo`) sem alargar o tipo literal inferido de cada valor.

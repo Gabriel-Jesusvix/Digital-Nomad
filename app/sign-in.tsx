@@ -1,8 +1,9 @@
 import { useAuthSignIn } from "@/src/domain/Auth/operations/useAuthSignIn";
+import { Button } from "@/src/ui/components/Button";
 import { Screen } from "@/src/ui/components/Screen";
 import { TextInput } from "@/src/ui/components/TextInput";
 import { useState } from "react";
-import { Button, StyleSheet } from "react-native";
+import { StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SignInScreen() {
@@ -34,7 +35,7 @@ export default function SignInScreen() {
           onChangeText={setPassword}
           placeholder="digite sua senha"
         />
-        <Button title="Entrar" onPress={handleSignIn} />
+        <Button title="Entrar" mt="s20" onPress={handleSignIn} />
       </SafeAreaView>
     </Screen>
   );
