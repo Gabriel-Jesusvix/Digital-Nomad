@@ -399,7 +399,52 @@ Boa composição (dois primitivos prontos, `IconButton` + `Text`), mas `justifyC
 
 ## 9. Tela Reset Password
 
-*(placeholder)*
+**Status: implementado.** Generalizou o `<Link asChild>` da aula 8 num componente `TextLink`, reusado em dois contextos com **intenções de navegação diferentes** — esse é o ponto central da aula.
+
+```tsx
+export function TextLink({ text, ctaText, href, goBackOnPress }: TextLinkProps) {
+  function handleOnPress() {
+    if (href) {
+      router.navigate(href);
+    } else if (goBackOnPress) {
+      router.back();
+    }
+  }
+  return (
+    <Pressable onPress={handleOnPress}>
+      <Text>{text} <Text color="primary">{ctaText}</Text></Text>
+    </Pressable>
+  );
+}
+
+// sign-in → sign-up: destino novo, sem relação de "voltar"
+<TextLink href="/sign-up" text="Ainda não tem uma conta?" ctaText="Criar" />
+
+// reset-password → sign-in: aqui o usuário JÁ VEIO do sign-in
+<TextLink goBackOnPress text="Lembrou sua senha?" ctaText="Voltar para o login" />
+```
+
+### O trade-off: `navigate(destino)` vs. `back()` — duas intenções diferentes, não uma escolha estética
+
+Os dois fazem o usuário "sair da tela atual", mas resolvem problemas diferentes, em **qualquer** sistema de navegação (React Navigation, Next.js, `History.back()` do browser, pilha nativa de iOS/Android — não é conceito específico do expo-router):
+
+| | `navigate(destino)` / `push` | `back()` / `pop` |
+|---|---|---|
+| Quando usar | Destino novo, sem relação com o histórico | Retornar pra tela de onde o usuário **já veio** |
+| Pilha de navegação | Empilha uma entrada nova (ou resolve a rota) | Remove a entrada atual, revela a de baixo |
+| Animação | Transição "pra frente" (padrão da plataforma) | Transição "de volta" (o inverso) |
+| Estado da tela de destino | Pode montar uma instância **nova** (estado perdido) | Reaproveita a instância que já existia (estado preservado) |
+
+**Por que isso importa na prática:** se "Lembrou sua senha?" usasse `router.navigate("/sign-in")` em vez de `router.back()`, três problemas apareceriam ao mesmo tempo — exatamente o "parece que substitui" descrito: (1) uma nova instância de `sign-in` seria empilhada por cima da anterior, então o botão de voltar nativo (ou gesto) precisaria de um toque a mais pra realmente sair do fluxo; (2) a animação sai "pra frente" em vez de "de volta", quebrando a expectativa de quem está clicando num link que diz "voltar"; (3) se o usuário tinha digitado o e-mail no sign-in antes de ir pro reset password, essa nova instância nasce em branco — o texto digitado se perde, porque não é a mesma tela, é uma cópia nova.
+
+**Por que não usar sempre `back()`:** porque nem toda navegação tem uma tela anterior conhecida — "Criar conta" a partir do sign-in não é "voltar" pra lugar nenhum, é ir pra um destino novo. Se alguém entrar direto em `/reset-password` via deep link (sem ter passado pelo sign-in), `back()` não teria pra onde voltar. Por isso o componente expõe as duas opções como props, em vez de escolher uma única estratégia pra todo mundo — a decisão de qual navegação usar é do consumidor do componente, não do componente.
+
+**Ponto de robustez em aberto (conecta com a aula 6):** hoje `href` e `goBackOnPress` são duas props opcionais e independentes — nada impede passar as duas, ou nenhuma das duas (nesse caso, `handleOnPress` não faz nada, silenciosamente). O mesmo raciocínio de `Record`/exaustividade da aula 6 se aplica aqui via union discriminada, tornando os dois modos mutuamente exclusivos **em tempo de compilação**:
+```ts
+type TextLinkProps =
+  | { text: string; ctaText: string; href: LinkProps["href"]; goBackOnPress?: never }
+  | { text: string; ctaText: string; href?: never; goBackOnPress: true };
+```
 
 ## 10. Reset Password Operation
 
@@ -456,6 +501,8 @@ Boa composição (dois primitivos prontos, `IconButton` + `Text`), mas `justifyC
 | Extrair componente na 2ª ocorrência | Evitar abstração prematura | `Logo` extraído só quando 2 telas repetiram o bloco — mas ficou sem props de espaçamento |
 | `space-between` com 2 filhos assimétricos | Título "centralizado" num header | Bug: `Header` cola o título na borda direita em vez de centralizar |
 | `asChild` (Link/Radix/React Aria) | Injetar comportamento sem forçar wrapper próprio | Implementado no `Link` de "Esqueceu sua senha"/"Criar" |
+| `navigate()` vs. `back()` | Ir pra um destino novo vs. retornar de onde veio | Implementado via props (`href`/`goBackOnPress`) no `TextLink` |
+| Union discriminada pra props mutuamente exclusivas | Impedir combinação inválida de props em tempo de compilação | Pendente no `TextLink` (`href`/`goBackOnPress` ainda são independentes) |
 
 ## Glossário
 
@@ -470,3 +517,4 @@ Boa composição (dois primitivos prontos, `IconButton` + `Text`), mas `justifyC
 - **Densidade de tela (`@2x`/`@3x`, `srcset`, drawable buckets):** convenção de nomear/organizar múltiplas resoluções do mesmo asset, mantendo o tamanho lógico fixo — a plataforma escolhe o arquivo, não o desenvolvedor.
 - **Regra das 2-3 ocorrências:** extrair um componente/função quando o mesmo bloco aparece pela segunda ou terceira vez, não na primeira — evita abstrair em cima de uma amostra de tamanho 1.
 - **`asChild` (padrão headless):** um componente de comportamento (navegação, foco, ARIA) que clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper — popularizado pelo Radix UI, também usado pelo expo-router.
+- **`navigate`/`push` vs. `back`/`pop`:** duas intenções de navegação diferentes em qualquer sistema de rotas (não só expo-router) — ir pra um destino novo (empilha, pode perder estado) vs. retornar de onde veio (desempilha, preserva estado e usa a animação inversa).
