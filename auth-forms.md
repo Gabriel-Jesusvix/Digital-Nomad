@@ -338,7 +338,64 @@ Em todos os casos: **tamanho lógico fixo, várias densidades de arquivo, a plat
 
 ## 8. Componentes Header e Logo
 
-*(placeholder)*
+**Status: implementado.** Extraiu `Logo` e `Header` de dentro de `sign-in.tsx`, e criou os esqueletos de `sign-up.tsx`/`reset-password.tsx` reusando os dois. Boa aula pra falar de **quando** e **como** extrair um componente.
+
+### Quando extrair: na segunda ocorrência, não na primeira
+
+`Logo` era um bloco de `<Image source={...} style={{...}}/>` só dentro de `sign-in.tsx`. Só virou componente quando `sign-up`/`reset-password` precisaram do mesmo bloco — **extrair no primeiro uso é abstração prematura** (você ainda não sabe o que varia entre os usos); extrair na segunda ou terceira repetição é o ponto em que o padrão já apareceu de verdade. Regra agnóstica de qualquer projeto/framework: componentizar por *repetição observada*, não por antecipação.
+
+```tsx
+// src/ui/containers/Logo.tsx
+export function Logo() {
+  return <Image source={require("../../../assets/images/logo.png")} style={{ width: 150, height: 60, marginTop: 20, marginBottom: 60 }} />;
+}
+```
+
+**O que a extração perdeu:** `Logo` não recebe nenhuma prop — todo o espaçamento (`marginTop`/`marginBottom`) ficou fixo dentro do componente. Em `sign-up.tsx`/`reset-password.tsx`, o `<Logo/>` acabou posicionado **depois** do `Button` no JSX (aparece embaixo na tela), enquanto em `sign-in.tsx` ele é o primeiro elemento (aparece no topo) — inconsistência visual entre telas que usam o mesmo componente. Fix comum, portável: aceitar `BoxProps`/`style` como prop (mesmo raciocínio da aula 5 — mesclar, não fixar) e decidir a posição no JSX de cada tela, não dentro do componente.
+
+### Componente com layout de duas pontas — o bug clássico do `space-between`
+
+```tsx
+export function Header({ title }: HeaderProps) {
+  return (
+    <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+      <IconButton iconName="Chevron-left" onPress={router.back} />
+      <Text variant="title16">{title}</Text>
+    </Box>
+  );
+}
+```
+
+Boa composição (dois primitivos prontos, `IconButton` + `Text`), mas `justifyContent="space-between"` com só dois filhos empurra cada um pra uma ponta — o título fica colado na borda direita, não centralizado entre o ícone e a borda, que é o layout convencional de header (ícone à esquerda, título centralizado). Isso é agnóstico de qualquer framework baseado em flexbox (web incluso): **`space-between` só "centraliza" visualmente quando os itens nas duas pontas têm larguras simétricas** — aqui não têm. Duas correções comuns:
+
+```tsx
+// 1. Spacer invisível do mesmo tamanho do ícone, como 3º filho
+<Box flexDirection="row" alignItems="center">
+  <IconButton .../>
+  <Text flex={1} textAlign="center">{title}</Text>
+  <Box width={24} /> {/* mesma largura do IconButton, invisível */}
+</Box>
+
+// 2. Título absoluto, ignorando o fluxo dos irmãos
+<Box flexDirection="row" alignItems="center">
+  <IconButton .../>
+  <Text position="absolute" left={0} right={0} textAlign="center">{title}</Text>
+</Box>
+```
+
+### `asChild` — deixar o filho decidir o visual, o componente pai só injeta comportamento
+
+```tsx
+<Link href="/reset-password" asChild>
+  <Text color="primary">Esqueceu sua senha</Text>
+</Link>
+```
+
+`asChild` diz ao `Link` (expo-router) para **não** renderizar seu próprio elemento (normalmente um wrapper clicável) e, em vez disso, clonar o comportamento de navegação/acessibilidade direto no filho único que você passar — aqui, um `Text` estilizado, sem precisar envolver tudo num wrapper extra. É o mesmo padrão `asChild` popularizado pelo Radix UI: qualquer componente que precise injetar comportamento (navegação, foco, ARIA) sem forçar sua própria tag/wrapper na árvore. Vale procurar esse nome em outras libs "headless" (Radix, React Aria) — é o mesmo conceito, não é exclusivo de rotas.
+
+### Esqueleto de tela antes da lógica
+
+`sign-up.tsx`/`reset-password.tsx` nasceram só com `Header` + `Button` (`onPress` vazio) + `Logo` — a casca visual de cada tela pronta antes de existir qualquer operação de fato (`useAuthSignUp`, `useResetPassword`, aulas 10/13). É uma sequência de trabalho válida: fechar a estrutura visual da tela primeiro, plugar o caso de uso depois — desde que o caso de uso, quando chegar, não force reescrever a estrutura.
 
 ## 9. Tela Reset Password
 
@@ -396,6 +453,9 @@ Em todos os casos: **tamanho lógico fixo, várias densidades de arquivo, a plat
 | Loading/disabled no Button | Feedback visual de mutation em andamento | Faltando — `isLoading` de `useAuthSignIn` ainda não é consumido |
 | Imagem multi-densidade (`@2x`/`@3x`) | Nitidez em qualquer tela sem inflar o tamanho exibido | Implementado (`logo.png`/`@2x`/`@3x`) — Metro escolhe o arquivo, `style` define o tamanho lógico |
 | Texto aninhado (`<Text><Text/></Text>`) | Estilizar um trecho dentro de uma frase | Implementado em "Ainda não tem uma conta? Criar" |
+| Extrair componente na 2ª ocorrência | Evitar abstração prematura | `Logo` extraído só quando 2 telas repetiram o bloco — mas ficou sem props de espaçamento |
+| `space-between` com 2 filhos assimétricos | Título "centralizado" num header | Bug: `Header` cola o título na borda direita em vez de centralizar |
+| `asChild` (Link/Radix/React Aria) | Injetar comportamento sem forçar wrapper próprio | Implementado no `Link` de "Esqueceu sua senha"/"Criar" |
 
 ## Glossário
 
@@ -408,3 +468,5 @@ Em todos os casos: **tamanho lógico fixo, várias densidades de arquivo, a plat
 - **`Record<K, V>` para variantes:** força um valor por chave do union, sem faltar nem sobrar — exaustividade garantida em tempo de compilação, sem precisar do truque `never` que um `switch` exigiria.
 - **`satisfies` (TS 4.9+):** valida um objeto contra um tipo (mesma exaustividade de uma anotação `: Tipo`) sem alargar o tipo literal inferido de cada valor.
 - **Densidade de tela (`@2x`/`@3x`, `srcset`, drawable buckets):** convenção de nomear/organizar múltiplas resoluções do mesmo asset, mantendo o tamanho lógico fixo — a plataforma escolhe o arquivo, não o desenvolvedor.
+- **Regra das 2-3 ocorrências:** extrair um componente/função quando o mesmo bloco aparece pela segunda ou terceira vez, não na primeira — evita abstrair em cima de uma amostra de tamanho 1.
+- **`asChild` (padrão headless):** um componente de comportamento (navegação, foco, ARIA) que clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper — popularizado pelo Radix UI, também usado pelo expo-router.
