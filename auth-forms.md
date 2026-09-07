@@ -302,7 +302,39 @@ Com `: Record<...>` direto, `buttonColors.primary.backgroundColor` fica widened 
 
 ## 7. Tela de Sign-in
 
-*(placeholder — a versão atual de `app/sign-in.tsx`, do módulo anterior, já chama `useAuthSignIn`, mas ainda com `TextInput`/`Button` genéricos do React Native, não os componentes de UI que devem surgir nas aulas 5-6.)*
+**Status: implementado.** A tela agora é 100% composta pelos primitivos das aulas anteriores (`Screen`, `Text`, `TextInput`, `Button`) mais uma logo. O ponto mais reaproveitável da aula, só que é sobre imagem, não sobre a tela em si.
+
+### Imagens com densidade de tela (`@2x`/`@3x`) — o principal aprendizado, agnóstico de RN
+
+Três arquivos foram adicionados: `logo.png`, `logo@2x.png`, `logo@3x.png`. Isso não é convenção do projeto — é um mecanismo do **Metro bundler** (RN/Expo): ao fazer `require("./logo.png")`, o Metro escaneia a mesma pasta por `logo@2x.png`/`logo@3x.png` e, em tempo de execução, escolhe o arquivo certo pra densidade de tela do device (`PixelRatio`) — sem nenhum código extra.
+
+```tsx
+<Image
+  source={require("../assets/images/logo.png")}
+  style={{ width: 150, height: 60 }} // tamanho "lógico" — sempre o do arquivo @1x
+/>
+```
+
+**A regra que confunde todo mundo:** o `style={{ width, height }}` é sempre o tamanho do arquivo **@1x** (aqui, `logo.png` deve medir exatamente 150×60px). `logo@2x.png` deve ser 300×120px, `logo@3x.png` 450×180px — arquivos maiores não fazem a imagem **aparecer** maior na tela, só mais **nítida** em telas de maior densidade. RN escolhe o arquivo, mas quem manda no tamanho exibido é sempre o `style`. Se um dos três arquivos não seguir a proporção exata (2x/3x do base), a imagem sai esticada — e só nos devices que carregam aquele arquivo específico, o que torna o bug fácil de não pegar testando num simulador só.
+
+**O mesmo princípio, fora do RN (agnóstico de fato):**
+- iOS nativo: Asset Catalog com sufixos `@2x`/`@3x` — mesmíssima convenção.
+- Android nativo: pastas por densidade (`drawable-mdpi`, `-hdpi`, `-xhdpi`...) em vez de sufixo, mesma ideia.
+- Web: `srcset`/`sizes` no `<img>`, ou `image-set()` no CSS — o browser escolhe a resolução.
+
+Em todos os casos: **tamanho lógico fixo, várias densidades de arquivo, a plataforma escolhe qual arquivo carregar** — desacopla "quão grande aparece" de "quão nítido aparece". Escape hatch pra ícones/logos vetoriais: SVG (`react-native-svg` no RN) é resolução-independente por natureza e não precisa desse jogo de 3 arquivos — só faz sentido pra imagem raster (foto, logo com gradiente/textura).
+
+### Boas práticas de composição da tela
+
+- **Texto aninhado pra estilizar um trecho da frase** — em vez de dois componentes lado a lado com flexbox manual, `<Text>` dentro de `<Text>` deixa o RN tratar a frase como um único bloco e só o trecho interno herda um estilo diferente:
+  ```tsx
+  <Text color="gray2">
+    Ainda não tem uma conta?{" "}
+    <Text variant="title14" color="primary">Criar</Text>
+  </Text>
+  ```
+  É o padrão idiomático do RN pra "destacar uma palavra dentro de uma frase" — equivalente a aninhar um `<span>` dentro de texto no HTML.
+- **Ponto ainda em aberto (herdado da aula 5):** os dois `TextInput` desta tela continuam recebendo `style={styles.input}`, que — como documentado na seção 5 — é descartado silenciosamente pelo componente. Ainda não foi corrigido; o `StyleSheet` local virou código morto de fato.
 
 ## 8. Componentes Header e Logo
 
@@ -362,6 +394,8 @@ Com `: Record<...>` direto, `buttonColors.primary.backgroundColor` fica widened 
 | `forwardRef` em componente de input | Focar campo programaticamente (próximo campo, campo inválido) | Faltando — vai doer nas aulas 12 e 14 |
 | `Record<Variant, Config>` para variantes | Exaustividade garantida pelo compilador, sem `if`/`switch` | Implementado no `Button` — mesma ideia do shadcn/ui e do `cva` |
 | Loading/disabled no Button | Feedback visual de mutation em andamento | Faltando — `isLoading` de `useAuthSignIn` ainda não é consumido |
+| Imagem multi-densidade (`@2x`/`@3x`) | Nitidez em qualquer tela sem inflar o tamanho exibido | Implementado (`logo.png`/`@2x`/`@3x`) — Metro escolhe o arquivo, `style` define o tamanho lógico |
+| Texto aninhado (`<Text><Text/></Text>`) | Estilizar um trecho dentro de uma frase | Implementado em "Ainda não tem uma conta? Criar" |
 
 ## Glossário
 
@@ -373,3 +407,4 @@ Com `: Record<...>` direto, `buttonColors.primary.backgroundColor` fica widened 
 - **Style merge vs. override:** ao aceitar `style` via props num wrapper, usar array (`style={[default, style]}`) para mesclar; um `style={{...}}` fixo depois de um spread sempre sobrescreve, nunca mescla.
 - **`Record<K, V>` para variantes:** força um valor por chave do union, sem faltar nem sobrar — exaustividade garantida em tempo de compilação, sem precisar do truque `never` que um `switch` exigiria.
 - **`satisfies` (TS 4.9+):** valida um objeto contra um tipo (mesma exaustividade de uma anotação `: Tipo`) sem alargar o tipo literal inferido de cada valor.
+- **Densidade de tela (`@2x`/`@3x`, `srcset`, drawable buckets):** convenção de nomear/organizar múltiplas resoluções do mesmo asset, mantendo o tamanho lógico fixo — a plataforma escolhe o arquivo, não o desenvolvedor.
