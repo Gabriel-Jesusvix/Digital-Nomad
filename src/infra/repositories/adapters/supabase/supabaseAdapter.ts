@@ -1,6 +1,8 @@
-import { Category, CategoryCode, City, CityPreview, TouristAttraction } from "../types";
+import { City, CityPreview, TouristAttraction } from "@/src/domain/city/City";
 import { Database } from "./types";
-
+import { AuthUser as SupaBaseAuthUser } from '@supabase/supabase-js'
+import { Category, CategoryCode } from "@/src/domain/category/Category";
+import { AuthUser } from "@/src/domain/Auth/AuthUser";
 export const storageURL = process.env.EXPO_PUBLIC_SUPABASE_STORAGE_URL;
 
 type CityWithFullInfo =
@@ -16,6 +18,16 @@ type CityPreviewRow = {
   country: string | null;
   cover_image: string | null;
 };
+function toAuthUser(supabaseUser: SupaBaseAuthUser): AuthUser {
+  if (!supabaseUser.email) {
+    throw new Error("email not found");
+  }
+  return {
+    id: supabaseUser.id,
+    email: supabaseUser.email,
+    fullname: supabaseUser.user_metadata.fullname,
+  };
+}
 
 function toCity(data: CityWithFullInfo): City {
   const categories = data.categories as CategoryRow[];
@@ -65,5 +77,6 @@ function toCategory(row: CategoryRow): Category {
 
 export const supabaseAdapter = {
   toCity,
-  toCityPreview
+  toCityPreview,
+  toAuthUser
 };

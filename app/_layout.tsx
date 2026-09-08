@@ -1,5 +1,5 @@
 import { AuthProvider } from "@/src/domain/Auth/AuthContext";
-import { InMemoryRepository } from "@/src/infra/repositories/adapters/inMemory";
+// import { InMemoryRepository } from "@/src/infra/repositories/adapters/inMemory";
 import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase";
 import { RepositoryProvider } from "@/src/infra/repositories/RepositoryProvider";
 import { AlertFeedback } from "@/src/infra/services/feedback/adapters/Alert/AlertFeedback";
@@ -47,7 +47,7 @@ export default function RootLayout() {
       <AuthProvider>
         <FeedbackProvider value={AlertFeedback}>
           <RepositoryProvider
-            value={InMemoryRepository}
+            value={SupabaseRepositories}
           >
             <ThemeProvider theme={theme}>
               <Stack

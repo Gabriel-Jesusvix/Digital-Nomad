@@ -620,7 +620,46 @@ Terceira vez que esse exato "recipe" aparece (`useAuthSendResetPasswordEmail` na
 
 ## 15. Supabase Auth Repository
 
-*(placeholder — mesmo movimento da seção 7 do módulo anterior: `SupabaseAuthRepository implements IAuthRepository`, substituindo o `inMemoryAuthRepository` que hoje está até no composition root do Supabase — ver arquitetura-frontend.md, seção 12.)*
+**Status: implementado.** Fecha exatamente a pendência registrada na seção 12 do `arquitetura-frontend.md`: `SupabaseRepositories.auth` deixa de ser `inMemoryAuthRepository` e passa a ser `SupabaseAuthRepository` de verdade — e `app/_layout.tsx` troca `InMemoryRepository` por `SupabaseRepositories` **pra tudo** (city, category e agora auth). É o app inteiro rodando no backend real, sem nenhuma tela, caso de uso ou componente mudar uma linha — o pagamento final da aposta em DIP + Composition Root do módulo anterior.
+
+### Classe vs. objeto de funções — o mesmo contrato, dois estilos
+
+```ts
+// estilo função (SupabaseCityRepository, aula 7 do módulo anterior)
+export const SupabaseCityRepository: ICityRepository = { findAll, findById, getRelatedCities };
+
+// estilo classe (esta aula)
+export class SupabaseAuthRepository implements IAuthRepository {
+  signIn = async (email: string, password: string): Promise<AuthUser> => { /* ... */ };
+  signUp = async (params: AuthSignUpParams): Promise<void> => { /* ... */ };
+  signOut = async (): Promise<void> => { /* ... */ };
+}
+```
+
+Os dois satisfazem a interface do mesmo jeito — tipagem estrutural, já documentada na seção 7 do módulo anterior: o app só enxerga `IAuthRepository`/`ICityRepository`, nunca sabe se por trás tem `class` ou objeto. **Quando cada estilo compensa, de forma agnóstica de projeto:**
+- **Objeto + funções soltas:** sem estado por instância, sem necessidade de `this`, zero boilerplate de `class`/`constructor` — mais simples quando o repository só orquestra chamadas (como aqui, nenhum dos dois precisa de config própria).
+- **Classe:** compensa quando existe estado/configuração por instância (ex.: um client HTTP configurado no `constructor`, em vez de importar um singleton), estado privado compartilhado entre métodos, ou testes que dependem de múltiplas instâncias com configs diferentes. Neste projeto, nem `city`/`category` nem `auth` realmente precisam disso — a escolha aqui foi estilística, confirmando o ponto: **o padrão Repository não exige um dos dois, a interface é o que importa.**
+
+### Onde a classe escondeu um bug que o objeto não deixaria passar
+
+```ts
+export class SupabaseAuthRepository implements IAuthRepository {
+  signIn = async (...) => { /* ... */ };
+  signUp = async (...) => { /* ... */ };
+  signOut = async (...) => { /* ... */ };
+  sendResetPasswordEmail: (email: string) => Promise<void>; // ⚠️ nunca implementado
+}
+```
+
+Confirmado com `tsc`: `error TS2564: Property 'sendResetPasswordEmail' has no initializer and is not definitely assigned`. Essa linha **declara o tipo** do campo, mas nunca atribui uma função — não é uma implementação, é só uma anotação. Chamar `auth.sendResetPasswordEmail(email)` em runtime (a tela de reset password, aula 10) quebraria com "not a function", e agora que o composition root aponta pra `SupabaseRepositories`, esse caminho está ativo de verdade.
+
+**Isso é exatamente o ponto que vale comparar com o estilo objeto:** se `SupabaseAuthRepository` fosse `export const SupabaseAuthRepository: IAuthRepository = { signIn, signUp, signOut }`, faltar `sendResetPasswordEmail` geraria um erro de shape bem mais direto — "Property 'sendResetPasswordEmail' is missing in type". Uma `class` permite escrever algo que **parece** progresso (uma anotação de tipo) sem ser implementação de verdade; um objeto literal não dá essa brecha. Não é motivo pra nunca usar classe — é motivo pra saber que, com classe, "implements a interface" não é garantia de "implementou todos os métodos com corpo de verdade" só de bater o olho.
+
+### Detalhes menores, mesma família de padrões já vistos
+
+- **Métodos como class fields com arrow function** (`signIn = async (...) => {}`, em vez de `async signIn(...) {}`): a razão de existir desse estilo é preservar o `this` da instância mesmo se o método for destruturado/passado solto por aí — aqui nenhum método usa `this`, então não era estritamente necessário, mas é um hábito defensivo comum em bases que usam classe.
+- **`toAuthUser` no `supabaseAdapter`**: mais um Mapper (aula 3 do módulo anterior), agora lidando com uma divergência de **opcionalidade**, não só de nome de campo — `email` é `string | null | undefined` no tipo do Supabase, mas obrigatório no domínio, daí o `if (!supabaseUser.email) throw ...` antes de montar o `AuthUser`.
+- **`SupaBaseAuthUser` como alias do `AuthUser` importado da lib**: mesmo truque de renomear o import nativo/de terceiros pra liberar o nome "natural" pro tipo do projeto, já visto na aula 5 com `RNTextInput`.
 
 ## 16. Redefinição de Senha
 
@@ -658,6 +697,8 @@ Terceira vez que esse exato "recipe" aparece (`useAuthSendResetPasswordEmail` na
 | Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` e `useAuthSignUp` (2 de 3 mutations de Auth) |
 | Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | `useAuthSignIn` é a exceção — ainda hardcoda `router.replace` dentro de `AuthContext` |
 | Tipo de form ≠ tipo de operação | Cada camada evolui sem acoplar a outra | Implementado: `SignUpSchema` (form) ≠ `AuthSignUpParams` (domínio), tradução explícita em `sign-up.tsx` |
+| Composition root 100% Supabase | App inteiro no backend real, zero mudança em tela/caso de uso | Implementado — `app/_layout.tsx` usa `SupabaseRepositories` pra city, category e auth |
+| Classe implementando interface incompleta | TS ainda assim "parece" implementar, mas falta o corpo | Bug confirmado (`TS2564`): `sendResetPasswordEmail` só tem tipo, nunca foi implementado em `SupabaseAuthRepository` |
 | Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
 | Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
 | Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
@@ -685,3 +726,5 @@ Terceira vez que esse exato "recipe" aparece (`useAuthSendResetPasswordEmail` na
 - **Resolver (RHF):** contrato abstrato que traduz o resultado de uma lib de schema qualquer pro formato que a lib de formulário entende — um adapter, no mesmo sentido de Ports & Adapters.
 - **Tipagem contextual:** TS só infere o tipo de um parâmetro a partir de "pra onde a função vai" quando ela é uma expressão no próprio ponto de uso (arrow function inline, variável já tipada) — uma `function` nomeada declarada à parte não ganha esse benefício.
 - **Semelhança coincidental vs. mesmo conceito:** dois tipos que hoje têm os mesmos campos, mas respondem perguntas diferentes (o que o formulário valida vs. o que a operação de domínio precisa), não deveriam compartilhar um único tipo — reusar um pelo outro acopla duas camadas que deveriam evoluir independente.
+- **Class field com arrow function:** `prop = (...) => {}` em vez de um método normal — fixa o `this` da instância no momento da criação, útil quando o método pode ser destruturado/passado solto; sem efeito quando o método nunca usa `this`.
+- **Interface "implementada" só de tipo, sem corpo:** uma `class` aceita `campo: Tipo;` sem atribuição, o que parece progresso mas não é chamável em runtime — um objeto literal implementando a mesma interface não permite esse descuido, porque falta a propriedade de verdade.
