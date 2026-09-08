@@ -531,7 +531,55 @@ Um validador de campo isolado (`z.string()...`) não enxerga campos irmãos — 
 
 ## 12. Formulário com React Hook Form
 
-*(placeholder — gerenciamento de estado de formulário sem re-render por tecla digitada; integração esperada com o schema Zod da aula 11 via resolver.)*
+**Status: implementado.** Conecta o schema da aula 11 ao `SignUpForm`. Três conceitos, cada um reaproveitável fora de React Hook Form (RHF):
+
+### `resolver` é Ports & Adapters, de novo
+
+```ts
+const { control, handleSubmit } = useForm<SignUpSchema>({
+  resolver: zodResolver(signUpSchema),
+});
+```
+
+RHF não sabe o que é Zod — ele define um contrato abstrato de "resolver" (dado o valor atual do form, devolva `{ values, errors }`), e `zodResolver` é o **adapter** que fala Zod nesse contrato (existe `yupResolver`, `joiResolver` etc. pro mesmo contrato). É exatamente o padrão Interface→Adapter do módulo de arquitetura (`ICityRepository`/`SupabaseCityRepository`, `IStorage`/`AsyncStorage`) — só que quem define a "porta" aqui não é este projeto, é a própria lib de formulário.
+
+### A cadeia de inferência de tipos — e onde ela quebra de verdade neste código
+
+```
+signUpSchema (Zod)  →  SignUpSchema = z.infer<typeof signUpSchema>  (aula 11)
+     →  useForm<SignUpSchema>(...)  →  Controller name="email" (autocomplete + type-check)
+     →  handleSubmit(onSubmit)  →  onSubmit(data: SignUpSchema)
+```
+
+Cada elo dessa cadeia é checado pelo compilador — errar o nome de um campo em `name="emial"` já quebra o build. Mas a cadeia só vale o elo mais fraco: em `app/sign-up.tsx`,
+
+```ts
+function handleSignUp(data) { // TS7006: Parameter 'data' implicitly has an 'any' type
+  console.log(data);
+}
+```
+
+`data` está `any` — confirmado pelo `tsc`. Diferente de uma arrow function inline (`<SignUpForm onSubmit={(data) => ...} />`) ou de uma variável já tipada (`const handleSignUp: SignUpFormProps["onSubmit"] = (data) => ...`), uma `function` nomeada e declarada à parte **não recebe tipagem contextual** só por ser passada depois como prop — o TS não "olha pra frente". Resultado prático: toda a inferência cuidadosamente encadeada desde o Zod se perde no último passo, silenciosamente (o código roda, só não tem mais segurança de tipo nenhuma dentro de `handleSignUp`). Lição agnóstica de TS: **uma cadeia de inferência é tão forte quanto o elo menos tipado** — vale sempre checar o `tsc` no ponto de consumo final, não só na origem do tipo.
+
+### `Controller` (render prop) vs. `register` — por que este projeto precisa do primeiro
+
+RHF tem dois jeitos de ligar um campo: `register()` (funciona direto com um `<input>` nativo via `ref`) e `<Controller control={control} name="..." render={({ field, fieldState }) => ...} />` (pra qualquer componente que não seja um input nativo reconhecível pela lib). Como `TextInput` (aula 5) é um componente próprio, `Controller` é o caminho — ele expõe `field.value`/`field.onChange` (você liga manualmente) e `fieldState.error` (o erro **só daquele campo**, já resolvido pelo schema):
+
+```tsx
+<Controller
+  control={control}
+  name="email"
+  render={({ field, fieldState }) => (
+    <TextInput
+      value={field.value}
+      onChangeText={field.onChange}
+      errorMessage={fieldState.error?.message} // exatamente a prop que a aula 5 já previa
+    />
+  )}
+/>
+```
+
+**Corrigindo uma previsão da aula 5:** eu tinha marcado a falta de `forwardRef` no `TextInput` como bloqueio. Não é bem assim — `Controller` existe justamente pra não depender de `ref`, então a ligação básica de valor/erro funciona sem `forwardRef`. O que ainda vai doer é foco programático (focar o próximo campo, focar o primeiro campo inválido) — e isso é exatamente o assunto da aula 14, então o alerta original só foi adiado pro lugar certo, não invalidado.
 
 ## 13. Sign Up Operation
 
@@ -583,6 +631,9 @@ Um validador de campo isolado (`z.string()...`) não enxerga campos irmãos — 
 | Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
 | Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
 | Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
+| `resolver` do RHF | Desacoplar RHF de qualquer lib de schema específica | Implementado (`zodResolver`) — mesmo padrão Interface/Adapter do módulo anterior |
+| Cadeia de inferência de tipos (Zod → RHF → callback) | Tipo nunca diverge da validação, ponta a ponta | Quebra em `sign-up.tsx`: `handleSignUp(data)` é `any` (TS7006) |
+| `Controller` vs. `register` (RHF) | Ligar campo customizado sem depender de `ref` nativo | Implementado — resolve o valor/erro sem precisar de `forwardRef` no `TextInput` |
 
 ## Glossário
 
@@ -601,3 +652,5 @@ Um validador de campo isolado (`z.string()...`) não enxerga campos irmãos — 
 - **Inversão de Controle via callback (`onSuccess`/`onError`):** uma função/hook reutilizável aceita um callback pra um efeito colateral que não é da sua responsabilidade (navegação, analytics), em vez de importar o módulo que causa esse efeito — quem chama decide o comportamento concreto.
 - **Schema-first:** escrever a validação (Zod/Yup/etc.) uma vez e derivar o tipo TS dela (`z.infer`), em vez de manter tipo e validação como duas fontes de verdade separadas.
 - **Validação cruzada:** regra que depende de mais de um campo (ex.: confirmação de senha) só pode viver no nível do objeto/form inteiro, nunca num validador de campo isolado — e precisa apontar explicitamente (`path`) pra qual campo o erro pertence.
+- **Resolver (RHF):** contrato abstrato que traduz o resultado de uma lib de schema qualquer pro formato que a lib de formulário entende — um adapter, no mesmo sentido de Ports & Adapters.
+- **Tipagem contextual:** TS só infere o tipo de um parâmetro a partir de "pra onde a função vai" quando ela é uma expressão no próprio ponto de uso (arrow function inline, variável já tipada) — uma `function` nomeada declarada à parte não ganha esse benefício.
