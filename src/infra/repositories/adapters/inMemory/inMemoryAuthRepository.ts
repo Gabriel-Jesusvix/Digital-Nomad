@@ -1,7 +1,7 @@
 
 import { AuthUser } from "@/src/domain/Auth/AuthUser";
 import { authUsers } from "./data/authUsers";
-import { IAuthRepository } from "@/src/domain/Auth/IAuthRepository";
+import { AuthSignUpParams, IAuthRepository } from "@/src/domain/Auth/IAuthRepository";
 
 export class inMemoryAuthRepository implements IAuthRepository {
   async signIn(email: string, password: string): Promise<AuthUser> {
@@ -11,6 +11,17 @@ export class inMemoryAuthRepository implements IAuthRepository {
     }
 
     throw new Error("user not found");
+  }
+
+  async signUp(params: AuthSignUpParams): Promise<void> {
+    const userAlreadyExist = authUsers.find(
+      (user) => user.email === params.email
+    );
+    if (userAlreadyExist) {
+      throw new Error("user already exist");
+    }
+
+    return;
   }
 
   async signOut(): Promise<void> {

@@ -583,7 +583,36 @@ RHF tem dois jeitos de ligar um campo: `register()` (funciona direto com um `<in
 
 ## 13. Sign Up Operation
 
-*(placeholder — mesmo padrão de `useAuthSignIn`/`useAuthSignOut`: um `useAuthSignUp` sobre `useAppMutation`.)*
+**Status: implementado.** Dois pontos, os dois já vistos antes neste documento em formas diferentes — o valor da aula é confirmar que são **regras**, não coincidência.
+
+### Tipo do form ≠ tipo da operação, de propósito
+
+```ts
+// src/ui/containers/SignUpForm/SignUpSchema.ts (aula 11) — preocupação de FORMULÁRIO
+type SignUpSchema = { fullname: string; email: string; password: string; confirmPassword: string };
+
+// src/domain/Auth/IAuthRepository.ts — preocupação de OPERAÇÃO de domínio
+export type AuthSignUpParams = { fullname: string; email: string; password: string };
+```
+
+```ts
+// app/sign-up.tsx — a tradução explícita entre os dois, campo a campo
+function handleSignUp(formValues: SignUpSchema) {
+  signUp({ email: formValues.email, fullname: formValues.fullname, password: formValues.password });
+}
+```
+
+`AuthSignUpParams` **não reaproveita** `SignUpSchema`, mesmo os dois tendo quase os mesmos campos hoje. É proposital: `confirmPassword` é uma conveniência de validação client-side — o domínio nunca deveria saber que essa técnica existe, porque "confirmar senha" não é uma regra de negócio, é uma decisão de UX do formulário. Se amanhã o form ganhar um checkbox "aceito os termos" (também UI-only), ele entra só em `SignUpSchema`. Se a operação de sign-up precisar de um campo que o form não coleta (ex.: um código de indicação lido de deep link), ele entra só em `AuthSignUpParams`. **Regra agnóstica de qualquer stack:** dois tipos que hoje se parecem, mas representam perguntas diferentes ("o que o formulário precisa validar" vs. "o que a operação de negócio precisa") **não são o mesmo tipo** — são coincidentemente parecidos, e reusar um pelo outro acopla dois lados que deveriam poder mudar independente. Mesmo raciocínio do `DTO`/Mapper já visto no módulo de arquitetura (`supabaseAdapter` convertendo linha de banco pra `City`), aqui na fronteira form → operação em vez de banco → domínio.
+
+### A regrinha de navegação, confirmada pela repetição
+
+```ts
+const { mutate: signUp } = useAuthSignUp({ onSuccess: router.back });
+```
+
+Terceira vez que esse exato "recipe" aparece (`useAuthSendResetPasswordEmail` na aula 10, agora `useAuthSignUp`): a mutation recebe `options?: UseAppMutationOptions<void>`, chama `options?.onSuccess?.()` e **sempre** dispara o feedback genérico; quem decide navegar é a tela. Duas ocorrências já seriam sinal de regra (aula 8); três confirmam que é uma decisão deliberada do projeto, não coincidência — e reforça que **`useAuthSignIn` continua sendo a exceção** que ainda hardcoda `router.replace` dentro de `AuthContext` (seção 2), agora claramente em minoria (2 de 3 operações seguem a regra).
+
+**Nota lateral:** o adapter `inMemoryAuthRepository.signUp` não é um mock totalmente vazio — ele checa duplicidade de e-mail (`throw new Error("user already exist")`) antes de "cadastrar". Um in-memory adapter pode carregar uma regra de negócio real e simples assim, quando isso ajuda a exercitar o caminho de erro (`feedbackService` disparando "erro ao cadastrar") durante o desenvolvimento, sem precisar de backend nenhum.
 
 ## 14. Formulário e Teclado
 
@@ -626,8 +655,9 @@ RHF tem dois jeitos de ligar um campo: `register()` (funciona direto com um `<in
 | `asChild` (Link/Radix/React Aria) | Injetar comportamento sem forçar wrapper próprio | Implementado no `Link` de "Esqueceu sua senha"/"Criar" |
 | `navigate()` vs. `back()` | Ir pra um destino novo vs. retornar de onde veio | Implementado via props (`href`/`goBackOnPress`) no `TextLink` |
 | Union discriminada pra props mutuamente exclusivas | Impedir combinação inválida de props em tempo de compilação | Pendente no `TextLink` (`href`/`goBackOnPress` ainda são independentes) |
-| Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` (`onSuccess: router.back`) |
-| Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | Pendente: `useAuthSignIn` ainda hardcoda `router.replace` dentro de `AuthContext` |
+| Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` e `useAuthSignUp` (2 de 3 mutations de Auth) |
+| Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | `useAuthSignIn` é a exceção — ainda hardcoda `router.replace` dentro de `AuthContext` |
+| Tipo de form ≠ tipo de operação | Cada camada evolui sem acoplar a outra | Implementado: `SignUpSchema` (form) ≠ `AuthSignUpParams` (domínio), tradução explícita em `sign-up.tsx` |
 | Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
 | Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
 | Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
@@ -654,3 +684,4 @@ RHF tem dois jeitos de ligar um campo: `register()` (funciona direto com um `<in
 - **Validação cruzada:** regra que depende de mais de um campo (ex.: confirmação de senha) só pode viver no nível do objeto/form inteiro, nunca num validador de campo isolado — e precisa apontar explicitamente (`path`) pra qual campo o erro pertence.
 - **Resolver (RHF):** contrato abstrato que traduz o resultado de uma lib de schema qualquer pro formato que a lib de formulário entende — um adapter, no mesmo sentido de Ports & Adapters.
 - **Tipagem contextual:** TS só infere o tipo de um parâmetro a partir de "pra onde a função vai" quando ela é uma expressão no próprio ponto de uso (arrow function inline, variável já tipada) — uma `function` nomeada declarada à parte não ganha esse benefício.
+- **Semelhança coincidental vs. mesmo conceito:** dois tipos que hoje têm os mesmos campos, mas respondem perguntas diferentes (o que o formulário valida vs. o que a operação de domínio precisa), não deveriam compartilhar um único tipo — reusar um pelo outro acopla duas camadas que deveriam evoluir independente.
