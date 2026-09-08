@@ -448,7 +448,40 @@ type TextLinkProps =
 
 ## 10. Reset Password Operation
 
-*(placeholder)*
+**Status: implementado.** Mesma receita de Repository do módulo anterior (`IAuthRepository` ganha `sendResetPasswordEmail`, `inMemoryAuthRepository` implementa com um `console.log` — mock só pra desenvolver/testar, nunca precisa mandar e-mail de verdade em dev). O ponto novo e mais importante da aula é **onde a navegação mora**.
+
+```ts
+// src/domain/Auth/operations/useAuthSendResetPasswordEmail.ts — não importa expo-router
+export function useAuthSendResetPasswordEmail(options?: UseAppMutationOptions<void>) {
+  const { auth } = useRepository();
+  const feedbackService = useFeedbackService();
+
+  return useAppMutation<void, { email: string }>({
+    mutateFn: ({ email }) => auth.sendResetPasswordEmail(email),
+    onSuccess: () => {
+      options?.onSuccess?.();               // o que o CHAMADOR quiser fazer
+      feedbackService.send({ type: "success", message: "verifique sua caixa de e-mail" });
+    },
+    onError: (error) => {
+      options?.onError?.(error);
+      feedbackService.send({ type: "error", message: "error on sign" });
+    },
+  });
+}
+
+// app/reset-password.tsx — só aqui existe expo-router
+const { mutate: sendResetEmail } = useAuthSendResetPasswordEmail({
+  onSuccess: router.back, // navegação é decisão da tela, não do caso de uso
+});
+```
+
+### Onde a navegação mora: fora do caso de uso, dentro de quem o chama
+
+`useAuthSendResetPasswordEmail` não sabe que `expo-router` existe — recebe `options?: UseAppMutationOptions<void>` (o mesmo `{ onSuccess?, onError? }` que `useAppMutation` já expõe) e só repassa pra frente, além de sempre disparar o feedback genérico. Quem decide **o que acontece depois** — nesse caso, `router.back()` — é a tela, porque só a tela sabe (e deveria saber) que existe navegação. É Inversão de Controle via callback: o caso de uso expõe um "gancho" (`onSuccess`), e quem o consome injeta o comportamento concreto, em vez do caso de uso importar a lib de rota diretamente.
+
+**Por que isso é agnóstico de framework:** é o mesmo mecanismo do `onSuccess`/`onError` do `useMutation` do TanStack Query (callback do chamador + comportamento "global" da lib, os dois disparando) — só que aqui reimplementado à mão, e com o "global" sendo o `feedbackService.send(...)` fixo dentro do caso de uso. Vale pra qualquer hook/composable/serviço que precise causar um efeito colateral que não é da sua alçada: em vez de importar o módulo que causa o efeito (router, analytics, etc.), aceitar um callback e deixar quem chama decidir.
+
+**Inconsistência que vale registrar (conecta com a seção 2):** `useAuthSignIn` **não** segue essa regra — a navegação pós-sign-in (`router.replace("/")`) está hardcoded dentro de `AuthContext.saveAuthUser`, chamada de dentro do próprio caso de uso, não injetada pela tela. Esta aula é, na prática, o padrão que deveria ter sido aplicado lá — vale revisitar `useAuthSignIn` pra deixar as duas operações consistentes.
 
 ## 11. Formulário: Schema com Zod
 
@@ -503,6 +536,8 @@ type TextLinkProps =
 | `asChild` (Link/Radix/React Aria) | Injetar comportamento sem forçar wrapper próprio | Implementado no `Link` de "Esqueceu sua senha"/"Criar" |
 | `navigate()` vs. `back()` | Ir pra um destino novo vs. retornar de onde veio | Implementado via props (`href`/`goBackOnPress`) no `TextLink` |
 | Union discriminada pra props mutuamente exclusivas | Impedir combinação inválida de props em tempo de compilação | Pendente no `TextLink` (`href`/`goBackOnPress` ainda são independentes) |
+| Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` (`onSuccess: router.back`) |
+| Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | Pendente: `useAuthSignIn` ainda hardcoda `router.replace` dentro de `AuthContext` |
 
 ## Glossário
 
@@ -518,3 +553,4 @@ type TextLinkProps =
 - **Regra das 2-3 ocorrências:** extrair um componente/função quando o mesmo bloco aparece pela segunda ou terceira vez, não na primeira — evita abstrair em cima de uma amostra de tamanho 1.
 - **`asChild` (padrão headless):** um componente de comportamento (navegação, foco, ARIA) que clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper — popularizado pelo Radix UI, também usado pelo expo-router.
 - **`navigate`/`push` vs. `back`/`pop`:** duas intenções de navegação diferentes em qualquer sistema de rotas (não só expo-router) — ir pra um destino novo (empilha, pode perder estado) vs. retornar de onde veio (desempilha, preserva estado e usa a animação inversa).
+- **Inversão de Controle via callback (`onSuccess`/`onError`):** uma função/hook reutilizável aceita um callback pra um efeito colateral que não é da sua responsabilidade (navegação, analytics), em vez de importar o módulo que causa esse efeito — quem chama decide o comportamento concreto.
