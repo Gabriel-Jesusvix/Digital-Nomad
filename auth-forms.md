@@ -712,7 +712,54 @@ Isso é um risco real e atual, não hipotético — `AsyncStorage` não é cript
 
 ## 17. Feedback com Toast Component
 
-*(placeholder — provavelmente um novo adapter de `IFeedbackService` — um `ToastFeedback` ao lado de `AlertFeedback`/`ConsoleFeedback` já existentes, trocado no mesmo Composition Root.)*
+**Status: implementado — fecha o módulo.** Confirma exatamente o que ficou previsto na seção 15: `ToastFeedback` chega como um terceiro adapter de `IFeedbackService`, ao lado de `AlertFeedback`/`ConsoleFeedback`, trocado com uma linha no Composition Root (`<FeedbackProvider value={ToastFeedback}>`). E a paleta `fbWarningBg`/`fbInfoBg` que entrou no tema lá na aula 5 "pensando em reuso" finalmente é usada aqui. A aula também deixou um bug real, ótimo pra ilustrar os três temas que você marcou.
+
+### O bug: tipo TypeScript "garante" algo que a biblioteca não garante em runtime
+
+```tsx
+function CustomToast({ type, description, message }: Feedback) {
+  const { backgroundColor, textColor } = toastColors[type]; // quebra
+  // ...
+}
+
+const toastConfig: ToastConfig = {
+  success: ({ props }) => <CustomToast {...props} />,
+  error: ({ props }) => <CustomToast {...props} />,
+  warning: ({ props }) => <CustomToast {...props} />,
+  info: ({ props }) => <CustomToast {...props} />,
+};
+```
+
+`<Toast />` é montado uma única vez, sem props, direto no `RootLayout` — ele só existe pra ficar esperando alguém chamar `Toast.show(...)`. O problema: a lib `react-native-toast-message` já renderiza algo internamente **antes** de qualquer `.show()` acontecer (estado ocioso), e nesse primeiro render ela chama `toastConfig[algumTipo]({ props: undefined })` — ou seja, `CustomToast` roda com `type` **de fato `undefined`**, mesmo a assinatura dizendo `{ type }: Feedback` (que promete `type: FeedbackType`, nunca `undefined`).
+
+**Por que a tipagem não pegou isso:** `Feedback`/`FeedbackType` são tipos *deste projeto*; `ToastConfig` é um tipo *da lib*. A lib decide quando e com que `props` chama sua função de render, e o tipo dela pra `props` não sabe nada sobre `Feedback` — então o TypeScript não tem como cruzar as pontas e avisar "essa função pode ser chamada sem os dados que você está assumindo". **Lição agnóstica de qualquer projeto TS que integra uma lib de terceiros via render prop/callback:** um tipo só protege até a fronteira de quem o declarou — do outro lado de uma callback controlada por uma lib externa, é a lib que decide o que de fato chega, não o seu `type`.
+
+**O fix, e por que ele é o certo:**
+```ts
+const { backgroundColor, textColor } = toastColors[type ?? "success"];
+```
+Não é "consertar o tipo" (não dá — a lib é quem chama, fora do seu controle) — é uma **defesa em runtime** no ponto exato onde um valor cruza essa fronteira: assumir um default sensato quando o dado "garantido" pelo tipo não chega de verdade. Regra prática: sempre que uma prop/callback é invocada por código que você não escreveu (lib externa, evento do SO, callback de terceiro), trate o tipo como uma expectativa, não como uma garantia — e proteja o ponto de uso, não só a assinatura.
+
+### Componentização: um componente, quatro entradas de configuração
+
+```ts
+const toastConfig: ToastConfig = {
+  success: ({ props }) => <CustomToast {...props} />,
+  error: ({ props }) => <CustomToast {...props} />,
+  warning: ({ props }) => <CustomToast {...props} />,
+  info: ({ props }) => <CustomToast {...props} />,
+};
+```
+
+Mesma ideia de `Record<Variant, Config>` da aula 6 (`Button`), só que aqui o "config" de cada variante é a própria função de render — `CustomToast` é escrito **uma vez** e reaproveitado nas quatro entradas, parametrizado inteiramente pela cor que `toastColors[type]` resolve. Não existem quatro componentes de toast, existe um componente e um mapa de variante — o mesmo princípio, de novo, em mais uma camada.
+
+### Interfaces: o contrato não mudou, só o vocabulário cresceu
+
+`IFeedbackService` continua exatamente `{ send: (feedback) => void }` — a mesma assinatura que `AlertFeedback` e `ConsoleFeedback` já implementavam. O que cresceu foi só o **dado** que passa por essa porta: `FeedbackType` ganhou `"warning" | "info"`. Como `ConsoleFeedback` mapeia cor por tipo via `Record<FeedbackType, string>` (mesma exaustividade da aula 6), o TypeScript **obrigou** a atualização das duas novas cores lá — sem isso o projeto não compilava. `AlertFeedback`, que não olha pro `type` (só mostra `message`/`description` sempre do mesmo jeito), não precisou mudar nada. É a interface bem desenhada mostrando sua vantagem: estender o vocabulário não quebrou nenhum adapter existente, e o compilador cobrou exatamente quem precisava se atualizar.
+
+**Nota menor, mesma família de problema:** em `useAuthSignIn`, o novo `description: error.message` veio com um `// @ts-ignore` — `error` é `unknown` (retorno do `catch` em `useAppMutation`), então `.message` não é seguro sem checar antes (`error instanceof Error ? error.message : String(error)`). `@ts-ignore` silencia o erro do compilador, não resolve a causa — mesma categoria de "confiar em algo que o tipo não garante" do bug principal desta aula, só que aqui foi mascarado, não corrigido.
+
+Com isso fecha o módulo de Autenticação e Formulários — sessão persistida com DIP (aulas 2-3), componentes de formulário reutilizáveis com validação schema-first (aulas 5-6, 11-12), operações de Auth com navegação injetada pela tela (aulas 10, 13), backend real via troca de adapter (aula 15), segurança no fluxo de reset (aula 16) e, por fim, feedback ao usuário generalizado pra três canais diferentes sem nunca mudar quem o consome.
 
 ---
 
@@ -747,6 +794,10 @@ Isso é um risco real e atual, não hipotético — `AsyncStorage` não é cript
 | Token em deep link | Evitar sequestro de link por app malicioso ou scanner de e-mail | Corrigido: `redirectTo` aponta pra web (HTTPS), não pra um custom scheme do app |
 | Allowlist de `redirectTo` | Impedir open redirect no fluxo de auth | Depende de configuração no painel do Supabase — princípio vale pra qualquer provedor de auth |
 | Storage de token de sessão | Token não pode ficar em storage sem criptografia | **Risco real**: `supabase.ts` usa `AsyncStorage` puro pra sessão (access/refresh token), não o `IStorage` seguro |
+| Terceiro adapter de `IFeedbackService` | Trocar canal de feedback sem tocar em quem consome | Implementado: `ToastFeedback` ao lado de `AlertFeedback`/`ConsoleFeedback` |
+| Tipo "garantido" que não sobrevive à fronteira de uma lib | `type` chega `undefined` mesmo com `Feedback` dizendo que não pode | Bug real em `CustomToast` — corrigido com `toastColors[type ?? "success"]` |
+| Exaustividade cobrando atualização de adapter | Union cresce, `Record` força os consumidores a se atualizar | `ConsoleFeedback` teve que ganhar cores novas; `AlertFeedback` não precisou |
+| `@ts-ignore` sobre `unknown` | Suprime o erro, não resolve a falta de narrowing | `useAuthSignIn` usa `@ts-ignore` em vez de `error instanceof Error` |
 | Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
 | Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
 | Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
@@ -783,3 +834,5 @@ Isso é um risco real e atual, não hipotético — `AsyncStorage` não é cript
 - **Custom URL scheme vs. Universal/App Link:** um `meuapp://` pode ser registrado por qualquer app no device (sem dono verificado); Universal Link (iOS)/App Link (Android) é vinculado a um domínio HTTPS que só o dono comprovado pode reivindicar — o segundo é seguro pra dado sensível, o primeiro não.
 - **Open redirect:** falha em que um serviço redireciona pra qualquer URL recebida como parâmetro, sem validar contra uma lista de destinos permitidos — em fluxos de auth, permite phishing usando um domínio confiável como isca.
 - **PKCE (Proof of Key Code Exchange):** padrão de OAuth2/OIDC onde o link/redirect carrega só um código de uso único, trocável pelo token real apenas por quem gerou um segredo local (`code_verifier`) — o token nunca trafega, sozinho, por um canal não confiável (e-mail, URL, log).
+- **Fronteira de tipo com lib externa:** um tipo do seu projeto só protege código que você escreveu; quando uma lib de terceiros decide quando/como chamar sua função (render prop, callback, evento), ela pode entregar menos do que o tipo promete — a defesa fica em runtime (default, guard), não na assinatura.
+- **`@ts-ignore` vs. narrowing:** `@ts-ignore` faz o compilador parar de reclamar sem resolver a causa (ex.: `error: unknown`); a forma correta é estreitar o tipo antes de usar (`error instanceof Error`).

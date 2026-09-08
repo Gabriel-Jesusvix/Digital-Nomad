@@ -19,7 +19,12 @@ export function useAuthSignIn() {
       });
     },
     onError: (error) => {
-      feedbackService.send({ type: "error", message: "error on sign" });
+      feedbackService.send({
+        type: "error",
+        message: "error ao fazer login",
+        //@ts-ignore
+        description: error.message,
+      });
     },
   });
 }
