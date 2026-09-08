@@ -485,7 +485,49 @@ const { mutate: sendResetEmail } = useAuthSendResetPasswordEmail({
 
 ## 11. Formulário: Schema com Zod
 
-*(placeholder — validação declarativa de formulário via schema, independente de UI: o mesmo schema pode validar o form E o payload antes de enviar pro repositório.)*
+**Status: implementado (schema pronto, ainda não conectado a nenhum form state).** Dois movimentos independentes nesta aula: extrair o formulário como componente próprio, e escrever a validação como schema — nenhum dos dois depende do outro pra existir.
+
+### Formulário como fronteira de componente — a tela não sabe como o form gerencia estado
+
+```tsx
+// app/sign-up.tsx — não sabe se existe Zod, RHF, useState ou o quê
+<SignUpForm onSubmit={handleSignUp} />
+
+// src/ui/containers/SignUpForm/SignUpForm.tsx — hoje só o esqueleto
+export function SignUpForm({ onSubmit }: { onSubmit: () => void }) {
+  return <Box><Button title="Criar conta" onPress={onSubmit} /></Box>;
+}
+```
+
+Extrair `SignUpForm` agora, **antes** de conectar React Hook Form (aula 12), é o que garante que a tela não precise mudar quando o formulário ganhar campos/validação de verdade — a tela só conhece o contrato `onSubmit`, não a implementação por trás. Agnóstico de qualquer lib de formulário (RHF, Formik, um `useState` por campo): o princípio é "o formulário é uma caixa-preta que devolve dados prontos", igual ao raciocínio de Repository/Ports & Adapters do módulo anterior, aplicado agora a um componente de UI em vez de acesso a dado. *(`onSubmit` hoje não recebe nenhum argumento — deve ganhar o payload tipado quando o RHF entrar, aula 12.)*
+
+### Schema-first: o tipo nasce da validação, não o contrário
+
+```ts
+export const signUpSchema = z
+  .object({
+    fullname: z.string({ message: "campo obrigatório" }).min(5, "nome muito curto"),
+    email: z.string({ message: "campo obrigatório" }).email("email inválido"),
+    password: z.string({ message: "campo obrigatório" }).min(6, "no mínimo 6 caracteres"),
+    confirmPassword: z.string({ message: "campo obrigatório" }).min(6, "no mínimo 6 caracteres"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "senhas devem ser iguais",
+    path: ["confirmPassword"],
+  });
+
+export type SignUpSchema = z.infer<typeof signUpSchema>;
+```
+
+**O ponto central, agnóstico de Zod especificamente** (Yup faz o mesmo com `InferType`, qualquer lib "schema-first" segue essa ideia): em vez de escrever um `type SignUpSchema = {...}` manualmente e, à parte, escrever regras de validação que podem divergir do tipo com o tempo, escreve-se a validação **uma vez só**, e o tipo é **derivado** dela (`z.infer<>`). Schema e tipo nunca dessincronizam, porque um é gerado a partir do outro — fonte única de verdade, típico do estilo DDD já visto no módulo anterior aplicado aqui à camada de validação.
+
+### Validação cruzada entre campos: o `.refine()` mora no objeto, não no campo
+
+Um validador de campo isolado (`z.string()...`) não enxerga campos irmãos — por isso `password === confirmPassword` só pode ser checado com `.refine()` no **objeto inteiro**, depois que todos os campos já existem. O detalhe fácil de esquecer é o `path: ["confirmPassword"]`: sem ele, o erro de senhas diferentes cai num nível "geral" do formulário, não no campo `confirmPassword` — e a maioria das integrações de UI (`errors.confirmPassword?.message`, aula 12) simplesmente não mostraria nada. Esse padrão (regra de objeto + `path` apontando pro campo certo) existe do mesmo jeito em outras libs de schema (Yup usa `.test()` com `path` equivalente) — não é peculiaridade do Zod.
+
+### Onde o arquivo mora: colocado com o form, não numa pasta compartilhada
+
+`SignUpSchema.ts` vive dentro de `SignUpForm/`, ao lado do componente que o usa — faz sentido enquanto só esse formulário usa esse formato de dado. Se outra tela precisar validar o mesmo shape (ex.: uma tela de "completar perfil" reaproveitando `fullname`/`email`), vale mover pra um lugar compartilhado (`src/domain/**` ou uma pasta `schemas/`) — mesma decisão de "onde a interface mora" já discutida no módulo anterior (repository, `IFeedbackService`), agora aplicada a schemas de validação.
 
 ## 12. Formulário com React Hook Form
 
@@ -538,6 +580,9 @@ const { mutate: sendResetEmail } = useAuthSendResetPasswordEmail({
 | Union discriminada pra props mutuamente exclusivas | Impedir combinação inválida de props em tempo de compilação | Pendente no `TextLink` (`href`/`goBackOnPress` ainda são independentes) |
 | Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` (`onSuccess: router.back`) |
 | Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | Pendente: `useAuthSignIn` ainda hardcoda `router.replace` dentro de `AuthContext` |
+| Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
+| Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
+| Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
 
 ## Glossário
 
@@ -554,3 +599,5 @@ const { mutate: sendResetEmail } = useAuthSendResetPasswordEmail({
 - **`asChild` (padrão headless):** um componente de comportamento (navegação, foco, ARIA) que clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper — popularizado pelo Radix UI, também usado pelo expo-router.
 - **`navigate`/`push` vs. `back`/`pop`:** duas intenções de navegação diferentes em qualquer sistema de rotas (não só expo-router) — ir pra um destino novo (empilha, pode perder estado) vs. retornar de onde veio (desempilha, preserva estado e usa a animação inversa).
 - **Inversão de Controle via callback (`onSuccess`/`onError`):** uma função/hook reutilizável aceita um callback pra um efeito colateral que não é da sua responsabilidade (navegação, analytics), em vez de importar o módulo que causa esse efeito — quem chama decide o comportamento concreto.
+- **Schema-first:** escrever a validação (Zod/Yup/etc.) uma vez e derivar o tipo TS dela (`z.infer`), em vez de manter tipo e validação como duas fontes de verdade separadas.
+- **Validação cruzada:** regra que depende de mais de um campo (ex.: confirmação de senha) só pode viver no nível do objeto/form inteiro, nunca num validador de campo isolado — e precisa apontar explicitamente (`path`) pra qual campo o erro pertence.
