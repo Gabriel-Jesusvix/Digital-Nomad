@@ -663,7 +663,52 @@ Confirmado com `tsc`: `error TS2564: Property 'sendResetPasswordEmail' has no in
 
 ## 16. Redefinição de Senha
 
-*(placeholder)*
+**Status: implementado, e é a aula mais sensível do módulo — envolve token de autenticação atravessando e-mail.** Fecha o bug pendente da seção 15 (`sendResetPasswordEmail` sem corpo) e resolve pra onde o link do e-mail deve apontar:
+
+```ts
+sendResetPasswordEmail = async (email: string): Promise<void> => {
+  await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${process.env.EXPO_PUBLIC_WEB_URL}/reset-password`,
+  });
+};
+```
+
+O link do e-mail aponta pra uma **aplicação web** (`EXPO_PUBLIC_WEB_URL`), não de volta pro app mobile via deep link. Isso não é detalhe de implementação — é a decisão de segurança da aula.
+
+### Por que não usar deep link direto pro app pra carregar o token
+
+Da [documentação oficial de segurança do React Native](https://reactnative.dev/docs/security):
+
+> "Deep links are not secure and you should never send any sensitive information in them."
+
+O motivo, agnóstico de Supabase ou qualquer provedor de auth: um custom URL scheme (`meuapp://reset-password?access_token=...`) **não tem registro centralizado** — qualquer app instalado no device pode registrar o mesmo scheme. No iOS o sistema escolhe silenciosamente qual app abre o link; no Android existe um diálogo, mas o usuário raramente entende o que está escolhendo. Um app malicioso que registre o mesmo scheme pode sequestrar o link e capturar o `access_token` que vinha dentro dele. A própria doc do RN faz a distinção: `app://products/1` é inofensivo (é só um id); mandar um token pelo mesmo canal é o problema.
+
+**Um risco extra, específico de e-mail, que vale saber:** muitos provedores de e-mail corporativo/antivírus **pré-visitam** links recebidos automaticamente pra escanear phishing/malware, antes do usuário sequer abrir a mensagem. Se o link contém um token de uso único, esse scanner pode consumir o token sozinho — o usuário clica depois e o link já expirou, ou pior, o token vaza pro serviço de scan. Token em URL de e-mail é um problema mesmo sem nenhum app malicioso no meio.
+
+### Por que passar pela web ajuda
+
+- **HTTPS não tem ambiguidade de dono** — ao contrário de um custom scheme, um domínio `https://` é resolvido de forma padrão por qualquer cliente de e-mail/browser, sem disputa de "qual app abre isso".
+- **O `redirectTo` do Supabase é validado contra uma allowlist** configurada no painel do projeto — Supabase recusa redirecionar pra qualquer URL que você não tenha autorizado antes. Esse é um princípio agnóstico de plataforma: **todo provedor de auth com opção de `redirectTo`/`callback URL` precisa dessa allowlist configurada**, senão você criou um open redirect — um atacante poderia trocar o destino do link por um domínio próprio, phishing perfeito porque o e-mail realmente veio do Supabase.
+- Se o fluxo realmente precisar voltar pro app nativo depois da parte web, a forma recomendada pela doc do RN é **Universal Link (iOS) / App Link (Android)** — não um custom scheme. Universal/App Links são verificados pelo sistema operacional via um arquivo hospedado no seu próprio domínio (`apple-app-site-association`/Digital Asset Links), então só o app dono comprovado daquele domínio pode recebê-los — não têm o problema de colisão de scheme.
+
+### O princípio geral por trás disso: nunca o token final, sempre um passo de troca
+
+A mesma doc do RN aponta o padrão da indústria pra esse problema, que vale mesmo fora do RN: **PKCE** (usado em OAuth2/OIDC). Em vez de mandar o token de sessão diretamente por um link, o fluxo manda um **código de uso único**, que só quem iniciou o fluxo consegue trocar pelo token de verdade (via um segredo gerado localmente, o `code_verifier`, nunca exposto na URL). Mesmo que o código vaze no meio do caminho (scanner de e-mail, log de servidor, app malicioso), ele sozinho não vale nada. O Supabase já aplica uma variante desse princípio no fluxo de recovery — o token do link é de curta duração e de uso único, não é a sessão final.
+
+### Achado real neste projeto: onde o token de sessão *de fato* é guardado
+
+```ts
+// src/infra/repositories/adapters/supabase/supabase.ts
+export const supabase = createClient(envs.url, envs.anonKey, {
+  auth: { storage: AsyncStorage, persistSession: true /* ... */ },
+});
+```
+
+O cliente Supabase usa `AsyncStorage` **puro** (não o `IStorage`/`AsyncStorage` da aula 3 deste módulo — é o import direto de `@react-native-async-storage/async-storage`) pra persistir a sessão inteira, incluindo `access_token`/`refresh_token`. A doc do RN é explícita sobre isso:
+
+> AsyncStorage: bom pra dado não-sensível (estado do Redux, cache); **não** pra token/segredo. Pra isso, iOS tem Keychain, Android tem Encrypted Shared Preferences/Keystore.
+
+Isso é um risco real e atual, não hipotético — `AsyncStorage` não é criptografado; num device comprometido (root/jailbreak), o token de sessão fica legível em texto plano. **Correção natural, dado que o projeto já tem o `IStorage` (aula 3) como porta trocável:** criar um `SecureStorageAdapter implements IStorage` sobre `expo-secure-store` (que usa Keychain/Keystore por baixo) e usá-lo especificamente pra tudo que for sessão/token — sem mexer no contrato, só trocando o adapter, exatamente o motivo de `IStorage` existir.
 
 ## 17. Feedback com Toast Component
 
@@ -699,12 +744,19 @@ Confirmado com `tsc`: `error TS2564: Property 'sendResetPasswordEmail' has no in
 | Tipo de form ≠ tipo de operação | Cada camada evolui sem acoplar a outra | Implementado: `SignUpSchema` (form) ≠ `AuthSignUpParams` (domínio), tradução explícita em `sign-up.tsx` |
 | Composition root 100% Supabase | App inteiro no backend real, zero mudança em tela/caso de uso | Implementado — `app/_layout.tsx` usa `SupabaseRepositories` pra city, category e auth |
 | Classe implementando interface incompleta | TS ainda assim "parece" implementar, mas falta o corpo | Bug confirmado (`TS2564`): `sendResetPasswordEmail` só tem tipo, nunca foi implementado em `SupabaseAuthRepository` |
+| Token em deep link | Evitar sequestro de link por app malicioso ou scanner de e-mail | Corrigido: `redirectTo` aponta pra web (HTTPS), não pra um custom scheme do app |
+| Allowlist de `redirectTo` | Impedir open redirect no fluxo de auth | Depende de configuração no painel do Supabase — princípio vale pra qualquer provedor de auth |
+| Storage de token de sessão | Token não pode ficar em storage sem criptografia | **Risco real**: `supabase.ts` usa `AsyncStorage` puro pra sessão (access/refresh token), não o `IStorage` seguro |
 | Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
 | Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
 | Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
 | `resolver` do RHF | Desacoplar RHF de qualquer lib de schema específica | Implementado (`zodResolver`) — mesmo padrão Interface/Adapter do módulo anterior |
 | Cadeia de inferência de tipos (Zod → RHF → callback) | Tipo nunca diverge da validação, ponta a ponta | Quebra em `sign-up.tsx`: `handleSignUp(data)` é `any` (TS7006) |
 | `Controller` vs. `register` (RHF) | Ligar campo customizado sem depender de `ref` nativo | Implementado — resolve o valor/erro sem precisar de `forwardRef` no `TextInput` |
+
+## Leituras complementares
+
+- **[React Native — Security](https://reactnative.dev/docs/security)** (documentação oficial) — base da seção 16: por que deep link não é seguro pra dado sensível, AsyncStorage vs. Keychain/Keystore pra token, e PKCE como padrão de troca segura em fluxos de auth com redirect. Vale reler antes de desenhar qualquer fluxo de auth/deep link em outro projeto, não só o de reset de senha.
 
 ## Glossário
 
@@ -728,3 +780,6 @@ Confirmado com `tsc`: `error TS2564: Property 'sendResetPasswordEmail' has no in
 - **Semelhança coincidental vs. mesmo conceito:** dois tipos que hoje têm os mesmos campos, mas respondem perguntas diferentes (o que o formulário valida vs. o que a operação de domínio precisa), não deveriam compartilhar um único tipo — reusar um pelo outro acopla duas camadas que deveriam evoluir independente.
 - **Class field com arrow function:** `prop = (...) => {}` em vez de um método normal — fixa o `this` da instância no momento da criação, útil quando o método pode ser destruturado/passado solto; sem efeito quando o método nunca usa `this`.
 - **Interface "implementada" só de tipo, sem corpo:** uma `class` aceita `campo: Tipo;` sem atribuição, o que parece progresso mas não é chamável em runtime — um objeto literal implementando a mesma interface não permite esse descuido, porque falta a propriedade de verdade.
+- **Custom URL scheme vs. Universal/App Link:** um `meuapp://` pode ser registrado por qualquer app no device (sem dono verificado); Universal Link (iOS)/App Link (Android) é vinculado a um domínio HTTPS que só o dono comprovado pode reivindicar — o segundo é seguro pra dado sensível, o primeiro não.
+- **Open redirect:** falha em que um serviço redireciona pra qualquer URL recebida como parâmetro, sem validar contra uma lista de destinos permitidos — em fluxos de auth, permite phishing usando um domínio confiável como isca.
+- **PKCE (Proof of Key Code Exchange):** padrão de OAuth2/OIDC onde o link/redirect carrega só um código de uso único, trocável pelo token real apenas por quem gerou um segredo local (`code_verifier`) — o token nunca trafega, sozinho, por um canal não confiável (e-mail, URL, log).
