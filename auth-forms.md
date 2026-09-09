@@ -1,838 +1,301 @@
-# Autenticação e Formulários — Notas de Estudo
+# Autenticação e Formulários — Guia de Estudo
 
-> Documento de **revisão**, não um tratado. Acompanha o módulo "Autenticação e Formulários" do curso, comparando os conceitos das aulas com o código real deste repositório. Continua de onde [arquitetura-frontend.md](arquitetura-frontend.md) parou — vários padrões daquele módulo (Repository, DIP, Ports & Adapters) reaparecem aqui aplicados a sessão de usuário e formulários. Objetivo é reler rápido antes de aplicar em outro projeto, não reconstruir a aula inteira.
+> Refinado ao final do módulo "Autenticação e Formulários". Organizado por **conceito**, não por aula — é assim que vale guardar isso na cabeça: um problema, o mecanismo por trás, o trade-off, e como replicar em outro projeto. Continua de onde [arquitetura-frontend.md](arquitetura-frontend.md) parou (Repository, DIP, Ports & Adapters); um mapa aula → seção fica no fim, pra rastreabilidade.
 
 ## Índice
 
-1. [Intro](#1-intro)
-2. [Contexto de Autenticação](#2-contexto-de-autenticação)
-3. [Storage com Inversão de Dependência](#3-storage-com-inversão-de-dependência)
-4. [Splash Screen](#4-splash-screen)
-5. [Componente TextInput](#5-componente-textinput)
-6. [Componente Button](#6-componente-button)
-7. [Tela de Sign-in](#7-tela-de-sign-in)
-8. [Componentes Header e Logo](#8-componentes-header-e-logo)
-9. [Tela Reset Password](#9-tela-reset-password)
-10. [Reset Password Operation](#10-reset-password-operation)
-11. [Formulário: Schema com Zod](#11-formulário-schema-com-zod)
-12. [Formulário com React Hook Form](#12-formulário-com-react-hook-form)
-13. [Sign Up Operation](#13-sign-up-operation)
-14. [Formulário e Teclado](#14-formulário-e-teclado)
-15. [Supabase Auth Repository](#15-supabase-auth-repository)
-16. [Redefinição de Senha](#16-redefinição-de-senha)
-17. [Feedback com Toast Component](#17-feedback-com-toast-component)
-18. [Comparações rápidas](#comparações-rápidas)
-19. [Glossário](#glossário)
+1. [Sessão: Context como estado, não como DI](#1-sessão-context-como-estado-não-como-di)
+2. [Ports & Adapters em toda camada](#2-ports--adapters-em-toda-camada)
+3. [Composition Root: ordem e troca de implementação](#3-composition-root-ordem-e-troca-de-implementação)
+4. [O bug recorrente de Context](#4-o-bug-recorrente-de-context)
+5. [TextInput: foco, borda, e como não quebrar um wrapper](#5-textinput-foco-borda-e-como-não-quebrar-um-wrapper)
+6. [Button: variantes tipadas](#6-button-variantes-tipadas)
+7. [Layout e assets: bugs comuns de flexbox e imagem](#7-layout-e-assets-bugs-comuns-de-flexbox-e-imagem)
+8. [Componentização: quando extrair, o que custa](#8-componentização-quando-extrair-o-que-custa)
+9. [Navegação é decisão da tela, não do domínio](#9-navegação-é-decisão-da-tela-não-do-domínio)
+10. [Formulário schema-first: Zod → RHF → operação](#10-formulário-schema-first-zod--rhf--operação)
+11. [TypeScript por baixo dos panos: onde a garantia para](#11-typescript-por-baixo-dos-panos-onde-a-garantia-para)
+12. [Segurança em fluxo de auth com redirect](#12-segurança-em-fluxo-de-auth-com-redirect)
+13. [Tabela de trade-offs](#13-tabela-de-trade-offs)
+14. [Mapa aula → conceito](#14-mapa-aula--conceito)
+15. [Glossário](#glossário)
 
 ---
 
-## 1. Intro
+## 1. Sessão: Context como estado, não como DI
 
-O módulo tem dois eixos, que se cruzam mas são independentes:
+`createContext` serve pra duas coisas bem diferentes, e a confusão entre elas é a fonte de vários bugs deste módulo: **injetar uma implementação trocável** (`RepositoryContext`, `FeedbackContext`, `StorageContext` — módulo anterior) ou **compartilhar estado que muda em runtime** (`AuthContext` — usuário logado ou não). Mesmo primitivo, papel arquitetural oposto.
 
-- **Sessão/autenticação**: como guardar "quem está logado" de forma que sobreviva a um refresh do app, sem acoplar essa decisão a `AsyncStorage` especificamente (retoma DIP/Ports & Adapters do módulo anterior).
-- **Formulários**: como validar e capturar input do usuário de forma consistente (Zod para schema, React Hook Form para estado do formulário), em vez de `useState` solto por campo.
-
-## 2. Contexto de Autenticação
-
-**Status: implementado.** Diferente de `RepositoryContext`/`FeedbackContext` (módulo anterior), que injetam uma **implementação trocável de uma interface** (Dependency Injection), `AuthContext` guarda **estado da aplicação que muda em tempo de execução** (usuário logado ou não). Mesmo primitivo do React (`createContext`), papel arquitetural diferente — vale não confundir os dois usos.
+**O mecanismo que toda sessão persistida precisa — hidratação:** ler storage é assíncrono, então no primeiro render `authUser` ainda não existe, mesmo que o usuário esteja logado. Sem uma flag de "ainda não terminei de checar", o gate de rota decide errado por uma fração de segundo, todo boot:
 
 ```tsx
-// src/domain/Auth/AuthContext.tsx
-type AuthState = {
-  authUser: AuthUser | null;
-  isReady: boolean;
-  saveAuthUser: (authUser: AuthUser) => Promise<void>;
-  removeAuthUser: () => Promise<void>;
-};
-
-export function AuthProvider({ children }: PropsWithChildren) {
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [isReady, setIsReady] = useState(false); // ver padrão "isReady" abaixo
-
-  useEffect(() => {
-    loadAuthUser(); // lê o storage uma vez, ao montar
-  }, []);
-
-  return <AuthContext.Provider value={{ authUser, isReady, saveAuthUser, removeAuthUser }}>
-    {children}
-  </AuthContext.Provider>;
-}
-```
-
-**Padrão agnóstico — a flag `isReady` (hidratação de sessão):** ler `AsyncStorage` é assíncrono, então no primeiro render `authUser` ainda não existe — mesmo que o usuário esteja logado. Sem uma flag de "ainda não terminei de checar", o gate de rota erraria e mandaria todo mundo pra tela de sign-in por uma fração de segundo, todo boot do app.
-
-```tsx
-// app/(protected)/_layout.tsx — consumindo o Context
 const { isReady, authUser } = useAuth();
-if (!isReady) return null;             // ainda checando o storage: não decide nada ainda
+if (!isReady) return null;               // ainda checando storage — não decide nada
 if (!authUser) return <Redirect href="/sign-in" />;
 ```
 
-Esse padrão (flag de "carregamento inicial concluído" antes de decidir um redirect) é reaproveitável em qualquer app com sessão persistida, independente da lib de auth.
+A Splash Screen nativa (`SplashScreen.preventAutoHideAsync()` + `.hide()` só quando `isReady`) é a versão "de produção" desse mesmo gate — cobre a janela de leitura do storage com uma UI de espera de verdade, em vez de piscar tela em branco. **Padrão reaplicável em qualquer stack com sessão persistida**, independente de lib de auth.
 
-> **O mesmo bug de Context, pela terceira vez (variante nova):** o valor default de `createContext<AuthState>({...})` aqui não é `{} as AuthState` (cast, como nos dois casos do módulo anterior) — é um objeto **completo e válido**, com `authUser: null` e funções no-op. Isso é até mais "correto" no sentido de não precisar de cast, mas tem a mesma consequência prática: um objeto sempre é truthy, então o `if (!context) throw new Error(...)` dentro de `useAuth()` nunca dispara. Três ocorrências do mesmo problema em dois módulos — reforça que esse é o erro nº1 a checar ao revisar qualquer Context em qualquer projeto: **o guard só funciona se o default for `undefined`/`null`.**
+## 2. Ports & Adapters em toda camada
 
-**Vale discutir (mesmo ponto do `IFeedbackService` no módulo anterior):** `saveAuthUser` chama `router.replace("/")` diretamente, misturando estado de sessão com navegação, dentro de um arquivo em `src/domain/Auth/` — camada que, pela convenção deste projeto, deveria ser livre de dependência de framework (aqui, `expo-router`). Não é um erro óbvio — só reforça que a fronteira "isso é domínio ou é UI?" precisa ser decidida conscientemente, não por acidente.
+O fio condutor dos dois módulos: uma **interface** (porta) que o app conhece, e **implementações concretas** (adapters) que ele não conhece, trocadas via Context num único ponto (Composition Root). Neste módulo, a mesma receita aparece quatro vezes:
 
-## 3. Storage com Inversão de Dependência
+| Porta | Adapters | Quem a define |
+|---|---|---|
+| `IStorage` (key-value genérico) | `AsyncStorage`, (futuro) `SecureStorage` | este projeto |
+| `IAuthRepository` | `inMemoryAuthRepository` (classe), `SupabaseAuthRepository` (classe) | este projeto |
+| `IFeedbackService` | `AlertFeedback`, `ConsoleFeedback`, `ToastFeedback` (3 objetos) | este projeto |
+| "resolver" de formulário | `zodResolver`, `yupResolver`, `joiResolver` | React Hook Form |
 
-**Status: implementado.** Mesma receita de Ports & Adapters do módulo anterior, aplicada a `AsyncStorage`. Diferença do que eu tinha previsto: em vez de uma interface *específica de Auth* (`IAuthStorage`), a interface ficou **genérica** — um key-value storage qualquer, reutilizável para qualquer feature que precise persistir algo, não só sessão:
+O último caso é o mais importante de internalizar: **nem toda porta é sua** — RHF define o contrato de resolver, você só entra com o adapter certo pra Zod. Reconhecer "isso aqui é uma porta de uma lib" evita reinventar a mesma abstração.
 
-```ts
-// src/infra/services/storage/IStorage.ts — porta genérica, não sabe que existe AsyncStorage
-export interface IStorage {
-  setItem: (key: string, value: any) => Promise<void>;
-  getItem: <IData>(key: string) => Promise<IData | null>;
-  removeItem: (key: string) => Promise<void>;
-}
+**Classe vs. objeto de funções pro mesmo contrato:** `SupabaseAuthRepository` é uma `class`; `SupabaseCityRepository` é um objeto com funções soltas. Tipagem estrutural garante que os dois satisfazem a interface do mesmo jeito — a escolha é estilística **a menos que** exista estado/config por instância (client HTTP configurado no `constructor`, múltiplas instâncias com config diferente em teste). Sem isso, classe só adiciona boilerplate. E tem um risco concreto do lado da classe: dá pra escrever `campo: Tipo;` sem nunca implementar (`TS2564`, "no initializer"), e isso *parece* progresso sem ser — um objeto literal implementando a mesma interface acusaria "property is missing" na hora, na cara. Regra prática: **prefira objeto/função quando não há estado; se usar classe, desconfie de qualquer membro sem `=` na declaração.**
 
-// src/infra/services/storage/adapters/AsyncStorage.ts — adapter concreto
-export const AsyncStorage: IStorage = {
-  getItem: async (key) => {
-    const item = await RNAsyncStorage.getItem(key);
-    return item ? JSON.parse(item) : null;
-  },
-  setItem: async (key, value) => RNAsyncStorage.setItem(key, JSON.stringify(value)),
-  removeItem: (key) => RNAsyncStorage.removeItem(key),
-};
-```
+## 3. Composition Root: ordem e troca de implementação
 
-Repare que o adapter esconde o `JSON.stringify`/`JSON.parse` — quem consome `IStorage` lida com objetos de verdade, não com string serializada. `AuthContext` deixou de chamar `AsyncStorage` direto e passou a usar `useStorage()`:
-
-```ts
-const { storage } = useStorage();
-await storage.setItem(AUTH_KEY, user);          // antes: AsyncStorage.setItem(AUTH_KEY, JSON.stringify(user))
-const user = await storage.getItem<AuthUser>(AUTH_KEY); // antes: JSON.parse(await AsyncStorage.getItem(AUTH_KEY))
-```
-
-**Nota agnóstica — ordem dos Providers importa quando um depende do outro:** como `AuthProvider` agora chama `useStorage()` por dentro, `StorageProvider` precisa envolver `AuthProvider` no composition root, não o contrário — Context só é lido por quem está aninhado *dentro* do Provider correspondente:
+O troco de todo esse desenho: mudar toda a fonte de dados/comportamento do app trocando o `value` de um Provider, sem tocar em tela nem caso de uso.
 
 ```tsx
-// app/_layout.tsx
+<RepositoryProvider value={SupabaseRepositories}> {/* era InMemoryRepository */}
+```
+
+**Regra que ninguém lembra até quebrar:** quando um Provider usa o hook de outro por dentro (`AuthProvider` chama `useStorage()`), a ordem de aninhamento não é livre — o Provider dependido tem que envolver o dependente:
+
+```tsx
 <StorageProvider storage={AsyncStorage}>
-  <AuthProvider>          {/* usa useStorage() por dentro — precisa estar dentro do StorageProvider */}
-    <FeedbackProvider value={AlertFeedback}>
-      <RepositoryProvider value={InMemoryRepository}>...</RepositoryProvider>
+  <AuthProvider>            {/* usa useStorage() por dentro */}
+    <FeedbackProvider value={ToastFeedback}>
+      <RepositoryProvider value={SupabaseRepositories} />
     </FeedbackProvider>
   </AuthProvider>
 </StorageProvider>
 ```
-Regra geral: monte o composition root de fora pra dentro seguindo o grafo de dependência entre os Providers, não a ordem em que os módulos foram criados.
 
-> **O mesmo bug de Context, pela quarta vez:** `StorageContext = createContext({ storage: {} as IStorage })` — de novo um default truthy, de novo um `if (!context) throw` que nunca dispara. Quatro ocorrências (`Repositories`, `Feedback`, `Auth`, agora `Storage`) confirmam que isso não é descuido pontual, é hábito. **Tip agnóstico de projeto:** em vez de repetir `createContext(X) + if (!context) throw` em cada arquivo, vale escrever uma vez um helper genérico —
-> ```ts
-> function createRequiredContext<T>(name: string) {
->   const Context = createContext<T | undefined>(undefined);
->   function useRequired(): T {
->     const ctx = use(Context);
->     if (!ctx) throw new Error(`${name} must be used within its Provider`);
->     return ctx;
->   }
->   return [Context, useRequired] as const;
-> }
-> ```
-> — assim o guard correto vem de fábrica, em qualquer Context novo do projeto.
+Monte o composition root seguindo o **grafo de dependência** entre Providers, não a ordem cronológica em que os módulos foram criados.
 
-## 4. Splash Screen
+## 4. O bug recorrente de Context
 
-**Status: parcialmente implementado** (chegou junto com a seção 3). `SplashScreen.preventAutoHideAsync()` mantém a splash nativa visível, e `AuthProvider` só chama `SplashScreen.hide()` quando `isReady` vira `true` — a splash cobre exatamente a janela em que a sessão ainda está sendo lida do storage, no lugar do antigo `if (!isReady) return null` (que piscava uma tela em branco). Mesma flag de hidratação da seção 2, agora com uma UI de espera de verdade.
-
-## 5. Componente TextInput
-
-**Status: implementado.** Wrapper de `RNTextInput` com label, borda reativa a foco/erro e slot de mensagem de erro — base de qualquer campo de formulário do módulo.
-
-```tsx
-export function TextInput({ label, errorMessage, ...textInputProps }: TextInputProps) {
-  const [isFocused, setIsFocused] = useState(false);
-  const borderColor = errorMessage ? "fbErrorSurface" : isFocused ? "text" : "gray1";
-
-  return (
-    <Box>
-      <Text variant="title14">{label}</Text>
-      <Box borderWidth={2} borderColor={borderColor} height={50}>
-        <RNTextInput
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          {...textInputProps}
-          style={{ height: "100%", width: "100%" /* ... */ }}
-        />
-      </Box>
-      <Text color="fbErrorSurface">{errorMessage}</Text>
-    </Box>
-  );
-}
-```
-
-### Capturar focus/blur (agnóstico de projeto)
-
-React Native não tem `:focus` de CSS — o padrão universal é: estado local booleano ligado a `onFocus`/`onBlur`, usado pra derivar estilo. Funciona em qualquer input customizado, qualquer lib de UI, qualquer plataforma.
-
-### Border: boa prática já aplicada aqui
-
-A **largura** da borda (`borderWidth: 2`) é constante nos três estados (default/foco/erro) — só a **cor** muda. Evita um bug clássico: mudar a largura no foco faz a caixa "pular" 1-2px, porque borda ocupa espaço de layout. Prioridade de cor também está certa — erro > foco > default, a mensagem de erro nunca some só porque o campo está focado.
-
-### Onde quebra com conteúdo/uso real — dois pontos concretos
-
-1. **`style` do consumidor é descartado silenciosamente.** `{...textInputProps}` é espalhado *antes* de um `style={{...}}` fixo — o `style` explícito, por vir depois, **sobrescreve** (não mescla) qualquer `style` que o chamador passe. Em `sign-in.tsx`, `style={styles.input}` hoje não faz nada — código morto. Correção padrão, portável pra qualquer wrapper de input nativo:
-   ```tsx
-   const { style, ...rest } = textInputProps;
-   <RNTextInput {...rest} style={[defaultStyle, style]} /> // array de estilos: RN mescla, o último vence
-   ```
-2. **Falta `forwardRef`.** O componente não encaminha `ref` pro `RNTextInput` interno — bloqueia focar o próximo campo ao apertar "next" no teclado (aula 14) e o React Hook Form focar o primeiro campo inválido após validar (aula 12). Sem isso, qualquer uma das duas features exige reescrever o componente depois:
-   ```tsx
-   export const TextInput = forwardRef<RNTextInput, TextInputProps>(
-     ({ label, errorMessage, ...props }, ref) => (/* ... <RNTextInput ref={ref} {...props} /> */)
-   );
-   ```
-
-### Outras boas práticas presentes
-
-- **Import nativo renomeado** (`RNTextInput`/`RNTextInputProps`) — o componente do projeto pode se chamar `TextInput` sem colidir com o import do React Native. Padrão limpo pra qualquer wrapper de componente nativo.
-- **Espaço da mensagem de erro sempre reservado** (o `Text` de erro renderiza mesmo vazio) — evita que o formulário "pule" de altura quando um erro aparece/some. Prática recomendada em qualquer formulário, intencional ou não aqui.
-- **Paleta de cores de feedback** (`fbErrorSurface`/`fbSuccessSurface`/`fbWarningSurface`/`fbInfoSurface`) entrou no tema pensando em reuso — os mesmos tokens devem servir tanto pra borda de erro do input quanto pro Toast da aula 17.
-
-## 6. Componente Button
-
-**Status: implementado.** Mapa de variantes tipado (`Record<Variant, Config>`) — o mesmo formato usado por shadcn/ui, Stitches etc., aqui aplicado ao Restyle:
-
-```tsx
-type ButtonVariant = "primary" | "secondary";
-
-const buttonColors: Record<ButtonVariant, { backgroundColor: ThemeColors; textColor: ThemeColors }> = {
-  primary: { backgroundColor: "primary", textColor: "text" },
-  secondary: { backgroundColor: "gray1", textColor: "text" },
-};
-
-export function Button({ title, onPress, variant = "primary", ...toProps }: ButtonProps) {
-  const buttonProps = buttonColors[variant];
-  return (
-    <TouchableOpacityBox {...toProps} onPress={onPress} backgroundColor={buttonProps.backgroundColor}>
-      <Text color={buttonProps.textColor}>{title}</Text>
-    </TouchableOpacityBox>
-  );
-}
-```
-
-### Por que `Record<Variant, Config>` (e não `if`/`switch`) — o motivo é o compilador
-
-`Record<ButtonVariant, Config>` obriga o objeto a ter **exatamente** uma entrada por valor do union — nem a mais, nem a menos. Isso vale em qualquer projeto TS, com ou sem lib de estilo:
+Apareceu **quatro vezes** neste código (`Repositories`, `Feedback`, `Auth`, `Storage`) — o suficiente pra virar item de checklist, não coincidência:
 
 ```ts
-type ButtonVariant = "primary" | "secondary" | "danger"; // adiciona "danger"
+const Context = createContext<T>({} as T); // ou até um objeto "válido" completo
+function useX() {
+  const ctx = use(Context);
+  if (!ctx) throw new Error("deve estar dentro do Provider"); // nunca dispara
+  return ctx;
+}
+```
 
+Qualquer valor default (mesmo um objeto completo e "correto") é **truthy** — o guard só funciona se o default for `undefined`/`null`. Fix de uma vez só, reusável em qualquer Context novo:
+
+```ts
+function createRequiredContext<T>(name: string) {
+  const Context = createContext<T | undefined>(undefined);
+  function useRequired(): T {
+    const ctx = use(Context);
+    if (!ctx) throw new Error(`${name} must be used within its Provider`);
+    return ctx;
+  }
+  return [Context, useRequired] as const;
+}
+```
+
+**Checklist mental pra qualquer projeto:** todo `createContext` novo — o default é `undefined`? Se não, o guard é decorativo.
+
+## 5. TextInput: foco, borda, e como não quebrar um wrapper
+
+Foco/blur sem `:focus` de CSS é sempre o mesmo mecanismo — estado local + `onFocus`/`onBlur` derivando estilo. Vale pra qualquer input customizado, qualquer plataforma.
+
+**Boa prática confirmada:** largura da borda constante entre estados (só a cor muda) evita o "pulo" de 1-2px quando o foco entra/sai — mudar largura desloca layout, mudar cor não.
+
+**Dois jeitos reais de um wrapper de input quebrar, ambos portáveis pra qualquer wrapper de componente nativo:**
+
+```tsx
+// 1. style do consumidor descartado — spread antes de um style fixo sempre perde
+const { style, ...rest } = props;
+<RNTextInput {...rest} style={[defaultStyle, style]} />  // array: RN mescla, não sobrescreve
+
+// 2. sem forwardRef — bloqueia foco programático (próximo campo, campo inválido)
+export const TextInput = forwardRef<RNTextInput, Props>((props, ref) => (
+  /* ... */ <RNTextInput ref={ref} {...props} />
+));
+```
+
+**Calibrando o item 2:** `Controller` do React Hook Form não precisa de `forwardRef` pra ligar valor/erro (usa `field.value`/`onChange`, não `ref`) — a falta só dói quando o objetivo é foco programático de verdade (avançar campo no teclado, focar o primeiro inválido). Não assuma que falta de `ref` bloqueia tudo; identifique exatamente qual funcionalidade depende dela.
+
+## 6. Button: variantes tipadas
+
+```ts
 const buttonColors: Record<ButtonVariant, Config> = {
   primary: { /* ... */ },
   secondary: { /* ... */ },
-  // ERRO de compilação: falta "danger" — TS avisa antes de rodar o app
+  // esquecer uma variante aqui = erro de compilação, não bug em produção
 };
 ```
 
-Um `if`/`switch` não avisa sozinho se um caso for esquecido, a menos que se adicione uma checagem manual de exaustividade (`never`):
+`Record<Variant, Config>` obriga uma entrada por valor do union — **o compilador** garante exaustividade, algo que um `if`/`switch` só ganha com o truque manual `const _exhaustive: never = variant`. É por isso que praticamente toda lib de variantes de UI (shadcn/ui + `class-variance-authority`, Stitches) usa objeto, não branching.
+
+**Versão 100% agnóstica de lib de estilo:**
 
 ```ts
-function getButtonColors(variant: ButtonVariant): Config {
-  switch (variant) {
-    case "primary": return { /* ... */ };
-    case "secondary": return { /* ... */ };
-    default:
-      const _exhaustive: never = variant; // erro de compilação se sobrar algum caso
-      throw new Error(`variant não tratado: ${variant}`);
-  }
-}
-```
-
-O objeto entrega essa garantia de graça; o `switch` exige o truque `never` pra ter a mesma segurança — por isso a maioria das libs de UI usa objeto, não `if`/`switch`.
-
-### Generalizando, sem nenhuma lib de estilo
-
-Tirando o Restyle da equação, o formato do padrão é sempre este:
-
-```ts
-type VariantStyles<Variant extends string, Style> = Record<Variant, Style>;
-
-function resolveVariant<Variant extends string, Style>(
-  styles: VariantStyles<Variant, Style>,
-  variant: Variant
-): Style {
+function resolveVariant<V extends string, S>(styles: Record<V, S>, variant: V): S {
   return styles[variant];
 }
-
-// com StyleSheet puro do React Native, zero Restyle:
-const buttonStyles: VariantStyles<"primary" | "secondary", ViewStyle> = {
-  primary: { backgroundColor: "blue" },
-  secondary: { backgroundColor: "gray" },
-};
-resolveVariant(buttonStyles, "primary"); // autocomplete + exaustividade, sem nenhuma lib de tema
 ```
 
-É literalmente o que `class-variance-authority` (a lib por trás do shadcn/ui) faz por baixo dos panos: o `variants` de um `cva(...)` é um `Record` desse tipo — só que a lib devolve uma função que monta `className`, em vez de props de estilo.
+Isso é literalmente o que `cva` faz por baixo — só que devolve `className` em vez de props de estilo. **Mais de um eixo de variante:** `Record` aninhado (`Record<Variant, Record<Size, Style>>`) lê melhor na maioria dos casos; chave composta via template literal type (`` `${Variant}-${Size}` ``) evita aninhar quando os eixos interagem de forma não-trivial. **`satisfies` (TS 4.9+)** troca a anotação direta quando você quer a mesma exaustividade sem alargar o tipo literal inferido de cada valor.
 
-### Mais de um eixo de variante
+## 7. Layout e assets: bugs comuns de flexbox e imagem
 
-Quando aparece um segundo eixo (tamanho, por exemplo), duas formas de tipar — ambas agnósticas de lib:
+**`space-between` com dois filhos assimétricos não centraliza nada** — empurra cada um pra uma ponta. Um header com ícone + título precisa de um terceiro elemento (spacer do tamanho do ícone) ou posicionamento absoluto pro título ficar realmente centralizado. Isso é matemática de flexbox, não bug de RN — vale pra qualquer framework baseado em flex, web incluso.
 
-```ts
-// 1. Record aninhado — lê melhor na maioria dos casos
-const styles: Record<ButtonVariant, Record<"sm" | "md", Style>> = {
-  primary: { sm: { /* ... */ }, md: { /* ... */ } },
-  secondary: { sm: { /* ... */ }, md: { /* ... */ } },
-};
+**Imagem multi-densidade (`@2x`/`@3x`):** o `style={{width,height}}` do `<Image>` é sempre o tamanho do arquivo `@1x` — arquivos maiores não aumentam o tamanho exibido, só a nitidez em telas de maior densidade. Metro escolhe o arquivo pelo `PixelRatio` do device; você controla o tamanho pelo `style`. O mesmo princípio existe fora do RN: Asset Catalog `@2x`/`@3x` no iOS nativo, pastas `drawable-*dpi` no Android, `srcset`/`image-set()` na web — **tamanho lógico fixo, várias densidades de arquivo, a plataforma escolhe**. SVG sidesteps o problema inteiro por ser resolução-independente.
 
-// 2. chave composta via template literal type — evita aninhar quando os eixos interagem
-type Key = `${ButtonVariant}-${"sm" | "md"}`; // "primary-sm" | "primary-md" | "secondary-sm" | "secondary-md"
-const styles: Record<Key, Style> = { "primary-sm": { /* ... */ } /* ... */ };
-```
+**Texto aninhado** (`<Text>texto <Text color="primary">destaque</Text></Text>`) é o padrão idiomático do RN pra estilizar um trecho dentro de uma frase — equivalente a um `<span>` aninhado no HTML, evita layout manual com dois componentes lado a lado.
 
-### Nota (TS 4.9+): `satisfies` em vez de anotação direta
+## 8. Componentização: quando extrair, o que custa
 
-```ts
-const buttonColors = {
-  primary: { backgroundColor: "primary", textColor: "text" },
-  secondary: { backgroundColor: "gray1", textColor: "text" },
-} satisfies Record<ButtonVariant, { backgroundColor: ThemeColors; textColor: ThemeColors }>;
-```
+**Regra das 2-3 ocorrências:** extrair um componente na primeira aparição é abstração prematura (você ainda não sabe o que varia entre usos); extrair na segunda/terceira repetição observada é o ponto certo. Agnóstico de framework — vale pra função, hook, componente, schema.
 
-Com `: Record<...>` direto, `buttonColors.primary.backgroundColor` fica widened pra `ThemeColors` (qualquer cor do tema). Com `satisfies`, o TS valida a mesma exaustividade (mesmo erro se faltar variante), mas preserva o tipo literal inferido (`"primary"`) — útil se código mais adiante quiser inferir a partir do valor exato.
+**O que a extração cobra, se malfeita:** um componente extraído sem props de configuração (`Logo` sem `style`/spacing) fica com posição/espaçamento hardcoded — o resultado real aqui foi inconsistência entre telas (`Logo` no topo numa tela, embaixo em outra, porque cada consumidor só podia controlar a ORDEM no JSX, não o espaçamento). Ao extrair, pergunte: "o que varia entre os usos que já existem?" e exponha isso como prop, não fixe.
 
-### O que o `Button` real ganha de graça, e o que falta
+**`asChild`** (usado no `<Link asChild>`): um componente de comportamento (navegação, foco, ARIA) clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper. Mesmo padrão do Radix UI e React Aria — reconhecer o nome ajuda a entender qualquer lib "headless".
 
-- **Ganha de graça:** `ButtonProps` estende `TouchableOpacityBoxProps` (que já inclui as props de espaçamento do Restyle), então `mt="s20"` (usado em `sign-in.tsx`) passa direto pelo `...toProps` sem o `Button` precisar redeclarar nada — extensão de tipo em vez de repetição de props.
-- **Falta:** variante de `loading`/`disabled` — o botão de sign-in já tem `isLoading` disponível em `useAuthSignIn()` (aula 13) que ainda não é usado pra desabilitar o botão ou mostrar um spinner. Fica pra quando o formulário de verdade (aulas 11-12) entrar em cena.
+**Esqueleto antes da lógica** é sequência de trabalho válida: fechar a casca visual de uma tela (Header + Button vazio + Logo) antes de existir o caso de uso real, desde que o caso de uso, quando chegar, não force reescrever a estrutura.
 
-## 7. Tela de Sign-in
+## 9. Navegação é decisão da tela, não do domínio
 
-**Status: implementado.** A tela agora é 100% composta pelos primitivos das aulas anteriores (`Screen`, `Text`, `TextInput`, `Button`) mais uma logo. O ponto mais reaproveitável da aula, só que é sobre imagem, não sobre a tela em si.
+Duas intenções de navegação diferentes, em **qualquer** sistema de rotas (React Navigation, Next.js, `History` do browser, pilha nativa) — não conceito de expo-router:
 
-### Imagens com densidade de tela (`@2x`/`@3x`) — o principal aprendizado, agnóstico de RN
-
-Três arquivos foram adicionados: `logo.png`, `logo@2x.png`, `logo@3x.png`. Isso não é convenção do projeto — é um mecanismo do **Metro bundler** (RN/Expo): ao fazer `require("./logo.png")`, o Metro escaneia a mesma pasta por `logo@2x.png`/`logo@3x.png` e, em tempo de execução, escolhe o arquivo certo pra densidade de tela do device (`PixelRatio`) — sem nenhum código extra.
-
-```tsx
-<Image
-  source={require("../assets/images/logo.png")}
-  style={{ width: 150, height: 60 }} // tamanho "lógico" — sempre o do arquivo @1x
-/>
-```
-
-**A regra que confunde todo mundo:** o `style={{ width, height }}` é sempre o tamanho do arquivo **@1x** (aqui, `logo.png` deve medir exatamente 150×60px). `logo@2x.png` deve ser 300×120px, `logo@3x.png` 450×180px — arquivos maiores não fazem a imagem **aparecer** maior na tela, só mais **nítida** em telas de maior densidade. RN escolhe o arquivo, mas quem manda no tamanho exibido é sempre o `style`. Se um dos três arquivos não seguir a proporção exata (2x/3x do base), a imagem sai esticada — e só nos devices que carregam aquele arquivo específico, o que torna o bug fácil de não pegar testando num simulador só.
-
-**O mesmo princípio, fora do RN (agnóstico de fato):**
-- iOS nativo: Asset Catalog com sufixos `@2x`/`@3x` — mesmíssima convenção.
-- Android nativo: pastas por densidade (`drawable-mdpi`, `-hdpi`, `-xhdpi`...) em vez de sufixo, mesma ideia.
-- Web: `srcset`/`sizes` no `<img>`, ou `image-set()` no CSS — o browser escolhe a resolução.
-
-Em todos os casos: **tamanho lógico fixo, várias densidades de arquivo, a plataforma escolhe qual arquivo carregar** — desacopla "quão grande aparece" de "quão nítido aparece". Escape hatch pra ícones/logos vetoriais: SVG (`react-native-svg` no RN) é resolução-independente por natureza e não precisa desse jogo de 3 arquivos — só faz sentido pra imagem raster (foto, logo com gradiente/textura).
-
-### Boas práticas de composição da tela
-
-- **Texto aninhado pra estilizar um trecho da frase** — em vez de dois componentes lado a lado com flexbox manual, `<Text>` dentro de `<Text>` deixa o RN tratar a frase como um único bloco e só o trecho interno herda um estilo diferente:
-  ```tsx
-  <Text color="gray2">
-    Ainda não tem uma conta?{" "}
-    <Text variant="title14" color="primary">Criar</Text>
-  </Text>
-  ```
-  É o padrão idiomático do RN pra "destacar uma palavra dentro de uma frase" — equivalente a aninhar um `<span>` dentro de texto no HTML.
-- **Ponto ainda em aberto (herdado da aula 5):** os dois `TextInput` desta tela continuam recebendo `style={styles.input}`, que — como documentado na seção 5 — é descartado silenciosamente pelo componente. Ainda não foi corrigido; o `StyleSheet` local virou código morto de fato.
-
-## 8. Componentes Header e Logo
-
-**Status: implementado.** Extraiu `Logo` e `Header` de dentro de `sign-in.tsx`, e criou os esqueletos de `sign-up.tsx`/`reset-password.tsx` reusando os dois. Boa aula pra falar de **quando** e **como** extrair um componente.
-
-### Quando extrair: na segunda ocorrência, não na primeira
-
-`Logo` era um bloco de `<Image source={...} style={{...}}/>` só dentro de `sign-in.tsx`. Só virou componente quando `sign-up`/`reset-password` precisaram do mesmo bloco — **extrair no primeiro uso é abstração prematura** (você ainda não sabe o que varia entre os usos); extrair na segunda ou terceira repetição é o ponto em que o padrão já apareceu de verdade. Regra agnóstica de qualquer projeto/framework: componentizar por *repetição observada*, não por antecipação.
-
-```tsx
-// src/ui/containers/Logo.tsx
-export function Logo() {
-  return <Image source={require("../../../assets/images/logo.png")} style={{ width: 150, height: 60, marginTop: 20, marginBottom: 60 }} />;
-}
-```
-
-**O que a extração perdeu:** `Logo` não recebe nenhuma prop — todo o espaçamento (`marginTop`/`marginBottom`) ficou fixo dentro do componente. Em `sign-up.tsx`/`reset-password.tsx`, o `<Logo/>` acabou posicionado **depois** do `Button` no JSX (aparece embaixo na tela), enquanto em `sign-in.tsx` ele é o primeiro elemento (aparece no topo) — inconsistência visual entre telas que usam o mesmo componente. Fix comum, portável: aceitar `BoxProps`/`style` como prop (mesmo raciocínio da aula 5 — mesclar, não fixar) e decidir a posição no JSX de cada tela, não dentro do componente.
-
-### Componente com layout de duas pontas — o bug clássico do `space-between`
-
-```tsx
-export function Header({ title }: HeaderProps) {
-  return (
-    <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-      <IconButton iconName="Chevron-left" onPress={router.back} />
-      <Text variant="title16">{title}</Text>
-    </Box>
-  );
-}
-```
-
-Boa composição (dois primitivos prontos, `IconButton` + `Text`), mas `justifyContent="space-between"` com só dois filhos empurra cada um pra uma ponta — o título fica colado na borda direita, não centralizado entre o ícone e a borda, que é o layout convencional de header (ícone à esquerda, título centralizado). Isso é agnóstico de qualquer framework baseado em flexbox (web incluso): **`space-between` só "centraliza" visualmente quando os itens nas duas pontas têm larguras simétricas** — aqui não têm. Duas correções comuns:
-
-```tsx
-// 1. Spacer invisível do mesmo tamanho do ícone, como 3º filho
-<Box flexDirection="row" alignItems="center">
-  <IconButton .../>
-  <Text flex={1} textAlign="center">{title}</Text>
-  <Box width={24} /> {/* mesma largura do IconButton, invisível */}
-</Box>
-
-// 2. Título absoluto, ignorando o fluxo dos irmãos
-<Box flexDirection="row" alignItems="center">
-  <IconButton .../>
-  <Text position="absolute" left={0} right={0} textAlign="center">{title}</Text>
-</Box>
-```
-
-### `asChild` — deixar o filho decidir o visual, o componente pai só injeta comportamento
-
-```tsx
-<Link href="/reset-password" asChild>
-  <Text color="primary">Esqueceu sua senha</Text>
-</Link>
-```
-
-`asChild` diz ao `Link` (expo-router) para **não** renderizar seu próprio elemento (normalmente um wrapper clicável) e, em vez disso, clonar o comportamento de navegação/acessibilidade direto no filho único que você passar — aqui, um `Text` estilizado, sem precisar envolver tudo num wrapper extra. É o mesmo padrão `asChild` popularizado pelo Radix UI: qualquer componente que precise injetar comportamento (navegação, foco, ARIA) sem forçar sua própria tag/wrapper na árvore. Vale procurar esse nome em outras libs "headless" (Radix, React Aria) — é o mesmo conceito, não é exclusivo de rotas.
-
-### Esqueleto de tela antes da lógica
-
-`sign-up.tsx`/`reset-password.tsx` nasceram só com `Header` + `Button` (`onPress` vazio) + `Logo` — a casca visual de cada tela pronta antes de existir qualquer operação de fato (`useAuthSignUp`, `useResetPassword`, aulas 10/13). É uma sequência de trabalho válida: fechar a estrutura visual da tela primeiro, plugar o caso de uso depois — desde que o caso de uso, quando chegar, não force reescrever a estrutura.
-
-## 9. Tela Reset Password
-
-**Status: implementado.** Generalizou o `<Link asChild>` da aula 8 num componente `TextLink`, reusado em dois contextos com **intenções de navegação diferentes** — esse é o ponto central da aula.
-
-```tsx
-export function TextLink({ text, ctaText, href, goBackOnPress }: TextLinkProps) {
-  function handleOnPress() {
-    if (href) {
-      router.navigate(href);
-    } else if (goBackOnPress) {
-      router.back();
-    }
-  }
-  return (
-    <Pressable onPress={handleOnPress}>
-      <Text>{text} <Text color="primary">{ctaText}</Text></Text>
-    </Pressable>
-  );
-}
-
-// sign-in → sign-up: destino novo, sem relação de "voltar"
-<TextLink href="/sign-up" text="Ainda não tem uma conta?" ctaText="Criar" />
-
-// reset-password → sign-in: aqui o usuário JÁ VEIO do sign-in
-<TextLink goBackOnPress text="Lembrou sua senha?" ctaText="Voltar para o login" />
-```
-
-### O trade-off: `navigate(destino)` vs. `back()` — duas intenções diferentes, não uma escolha estética
-
-Os dois fazem o usuário "sair da tela atual", mas resolvem problemas diferentes, em **qualquer** sistema de navegação (React Navigation, Next.js, `History.back()` do browser, pilha nativa de iOS/Android — não é conceito específico do expo-router):
-
-| | `navigate(destino)` / `push` | `back()` / `pop` |
+| | `navigate`/`push` | `back`/`pop` |
 |---|---|---|
-| Quando usar | Destino novo, sem relação com o histórico | Retornar pra tela de onde o usuário **já veio** |
-| Pilha de navegação | Empilha uma entrada nova (ou resolve a rota) | Remove a entrada atual, revela a de baixo |
-| Animação | Transição "pra frente" (padrão da plataforma) | Transição "de volta" (o inverso) |
-| Estado da tela de destino | Pode montar uma instância **nova** (estado perdido) | Reaproveita a instância que já existia (estado preservado) |
+| Quando | Destino novo, sem relação com histórico | Retornar pra tela de onde já veio |
+| Pilha | Empilha uma entrada nova | Remove a atual, revela a de baixo |
+| Estado do destino | Pode nascer uma instância nova (perde estado) | Reaproveita a instância existente (preserva estado) |
 
-**Por que isso importa na prática:** se "Lembrou sua senha?" usasse `router.navigate("/sign-in")` em vez de `router.back()`, três problemas apareceriam ao mesmo tempo — exatamente o "parece que substitui" descrito: (1) uma nova instância de `sign-in` seria empilhada por cima da anterior, então o botão de voltar nativo (ou gesto) precisaria de um toque a mais pra realmente sair do fluxo; (2) a animação sai "pra frente" em vez de "de volta", quebrando a expectativa de quem está clicando num link que diz "voltar"; (3) se o usuário tinha digitado o e-mail no sign-in antes de ir pro reset password, essa nova instância nasce em branco — o texto digitado se perde, porque não é a mesma tela, é uma cópia nova.
+Usar `navigate` onde a intenção era "voltar" empilha telas desnecessárias, anima na direção errada, e **perde o estado que já existia** na tela original (ela renasce em branco). Usar sempre `back` também não serve — nem toda navegação tem uma tela anterior conhecida (deep link direto numa tela, ou destino genuinamente novo).
 
-**Por que não usar sempre `back()`:** porque nem toda navegação tem uma tela anterior conhecida — "Criar conta" a partir do sign-in não é "voltar" pra lugar nenhum, é ir pra um destino novo. Se alguém entrar direto em `/reset-password` via deep link (sem ter passado pelo sign-in), `back()` não teria pra onde voltar. Por isso o componente expõe as duas opções como props, em vez de escolher uma única estratégia pra todo mundo — a decisão de qual navegação usar é do consumidor do componente, não do componente.
-
-**Ponto de robustez em aberto (conecta com a aula 6):** hoje `href` e `goBackOnPress` são duas props opcionais e independentes — nada impede passar as duas, ou nenhuma das duas (nesse caso, `handleOnPress` não faz nada, silenciosamente). O mesmo raciocínio de `Record`/exaustividade da aula 6 se aplica aqui via union discriminada, tornando os dois modos mutuamente exclusivos **em tempo de compilação**:
-```ts
-type TextLinkProps =
-  | { text: string; ctaText: string; href: LinkProps["href"]; goBackOnPress?: never }
-  | { text: string; ctaText: string; href?: never; goBackOnPress: true };
-```
-
-## 10. Reset Password Operation
-
-**Status: implementado.** Mesma receita de Repository do módulo anterior (`IAuthRepository` ganha `sendResetPasswordEmail`, `inMemoryAuthRepository` implementa com um `console.log` — mock só pra desenvolver/testar, nunca precisa mandar e-mail de verdade em dev). O ponto novo e mais importante da aula é **onde a navegação mora**.
+**Navegação nunca deveria morar dentro de um caso de uso.** O padrão que se repetiu 2 de 3 vezes neste módulo:
 
 ```ts
-// src/domain/Auth/operations/useAuthSendResetPasswordEmail.ts — não importa expo-router
+// caso de uso — nunca importa expo-router
 export function useAuthSendResetPasswordEmail(options?: UseAppMutationOptions<void>) {
-  const { auth } = useRepository();
-  const feedbackService = useFeedbackService();
-
-  return useAppMutation<void, { email: string }>({
-    mutateFn: ({ email }) => auth.sendResetPasswordEmail(email),
-    onSuccess: () => {
-      options?.onSuccess?.();               // o que o CHAMADOR quiser fazer
-      feedbackService.send({ type: "success", message: "verifique sua caixa de e-mail" });
-    },
-    onError: (error) => {
-      options?.onError?.(error);
-      feedbackService.send({ type: "error", message: "error on sign" });
-    },
+  return useAppMutation({
+    mutateFn: (email) => auth.sendResetPasswordEmail(email),
+    onSuccess: () => { options?.onSuccess?.(); feedbackService.send({...}); },
   });
 }
 
-// app/reset-password.tsx — só aqui existe expo-router
-const { mutate: sendResetEmail } = useAuthSendResetPasswordEmail({
-  onSuccess: router.back, // navegação é decisão da tela, não do caso de uso
-});
+// tela — só aqui existe router
+useAuthSendResetPasswordEmail({ onSuccess: router.back });
 ```
 
-### Onde a navegação mora: fora do caso de uso, dentro de quem o chama
+É Inversão de Controle via callback — o mesmo mecanismo do `onSuccess`/`onError` do `useMutation` do TanStack Query (callback do chamador + comportamento "global" da lib, os dois disparando). Vale pra qualquer efeito colateral que não é da alçada de um hook/serviço reutilizável (navegação, analytics): aceite um callback, não importe o módulo que causa o efeito. **Exceção neste código:** `useAuthSignIn` ainda hardcoda `router.replace` dentro de `AuthContext` — dívida técnica identificada, não padrão a seguir.
 
-`useAuthSendResetPasswordEmail` não sabe que `expo-router` existe — recebe `options?: UseAppMutationOptions<void>` (o mesmo `{ onSuccess?, onError? }` que `useAppMutation` já expõe) e só repassa pra frente, além de sempre disparar o feedback genérico. Quem decide **o que acontece depois** — nesse caso, `router.back()` — é a tela, porque só a tela sabe (e deveria saber) que existe navegação. É Inversão de Controle via callback: o caso de uso expõe um "gancho" (`onSuccess`), e quem o consome injeta o comportamento concreto, em vez do caso de uso importar a lib de rota diretamente.
+## 10. Formulário schema-first: Zod → RHF → operação
 
-**Por que isso é agnóstico de framework:** é o mesmo mecanismo do `onSuccess`/`onError` do `useMutation` do TanStack Query (callback do chamador + comportamento "global" da lib, os dois disparando) — só que aqui reimplementado à mão, e com o "global" sendo o `feedbackService.send(...)` fixo dentro do caso de uso. Vale pra qualquer hook/composable/serviço que precise causar um efeito colateral que não é da sua alçada: em vez de importar o módulo que causa o efeito (router, analytics, etc.), aceitar um callback e deixar quem chama decidir.
+**Formulário como caixa-preta:** a tela só conhece `onSubmit`, nunca a lib de form state por trás — mesmo raciocínio de Ports & Adapters aplicado a um componente de UI em vez de acesso a dado. Permite trocar `useState` por RHF sem tocar na tela.
 
-**Inconsistência que vale registrar (conecta com a seção 2):** `useAuthSignIn` **não** segue essa regra — a navegação pós-sign-in (`router.replace("/")`) está hardcoded dentro de `AuthContext.saveAuthUser`, chamada de dentro do próprio caso de uso, não injetada pela tela. Esta aula é, na prática, o padrão que deveria ter sido aplicado lá — vale revisitar `useAuthSignIn` pra deixar as duas operações consistentes.
-
-## 11. Formulário: Schema com Zod
-
-**Status: implementado (schema pronto, ainda não conectado a nenhum form state).** Dois movimentos independentes nesta aula: extrair o formulário como componente próprio, e escrever a validação como schema — nenhum dos dois depende do outro pra existir.
-
-### Formulário como fronteira de componente — a tela não sabe como o form gerencia estado
-
-```tsx
-// app/sign-up.tsx — não sabe se existe Zod, RHF, useState ou o quê
-<SignUpForm onSubmit={handleSignUp} />
-
-// src/ui/containers/SignUpForm/SignUpForm.tsx — hoje só o esqueleto
-export function SignUpForm({ onSubmit }: { onSubmit: () => void }) {
-  return <Box><Button title="Criar conta" onPress={onSubmit} /></Box>;
-}
-```
-
-Extrair `SignUpForm` agora, **antes** de conectar React Hook Form (aula 12), é o que garante que a tela não precise mudar quando o formulário ganhar campos/validação de verdade — a tela só conhece o contrato `onSubmit`, não a implementação por trás. Agnóstico de qualquer lib de formulário (RHF, Formik, um `useState` por campo): o princípio é "o formulário é uma caixa-preta que devolve dados prontos", igual ao raciocínio de Repository/Ports & Adapters do módulo anterior, aplicado agora a um componente de UI em vez de acesso a dado. *(`onSubmit` hoje não recebe nenhum argumento — deve ganhar o payload tipado quando o RHF entrar, aula 12.)*
-
-### Schema-first: o tipo nasce da validação, não o contrário
+**Schema-first, o ponto mais valioso e mais agnóstico de Zod:**
 
 ```ts
-export const signUpSchema = z
-  .object({
-    fullname: z.string({ message: "campo obrigatório" }).min(5, "nome muito curto"),
-    email: z.string({ message: "campo obrigatório" }).email("email inválido"),
-    password: z.string({ message: "campo obrigatório" }).min(6, "no mínimo 6 caracteres"),
-    confirmPassword: z.string({ message: "campo obrigatório" }).min(6, "no mínimo 6 caracteres"),
-  })
+export const signUpSchema = z.object({ /* ... */ })
   .refine((data) => data.password === data.confirmPassword, {
     message: "senhas devem ser iguais",
-    path: ["confirmPassword"],
+    path: ["confirmPassword"], // sem isso, o erro cai fora do campo certo
   });
 
-export type SignUpSchema = z.infer<typeof signUpSchema>;
+export type SignUpSchema = z.infer<typeof signUpSchema>; // tipo DERIVADO, nunca escrito à mão
 ```
 
-**O ponto central, agnóstico de Zod especificamente** (Yup faz o mesmo com `InferType`, qualquer lib "schema-first" segue essa ideia): em vez de escrever um `type SignUpSchema = {...}` manualmente e, à parte, escrever regras de validação que podem divergir do tipo com o tempo, escreve-se a validação **uma vez só**, e o tipo é **derivado** dela (`z.infer<>`). Schema e tipo nunca dessincronizam, porque um é gerado a partir do outro — fonte única de verdade, típico do estilo DDD já visto no módulo anterior aplicado aqui à camada de validação.
+Tipo e validação nunca dessincronizam porque um é gerado do outro — Yup faz o mesmo com `InferType`, é padrão de qualquer lib "schema-first". Validação cruzada entre campos só pode viver no `.refine()` do objeto inteiro (um validador de campo isolado não vê os irmãos), e o `path` é o detalhe fácil de esquecer que decide se o erro aparece no lugar certo da UI.
 
-### Validação cruzada entre campos: o `.refine()` mora no objeto, não no campo
+**`resolver` é mais uma porta, só que definida pela lib:** RHF não sabe o que é Zod; `zodResolver` traduz o resultado do schema pro formato que o RHF entende. **`Controller`** existe pra ligar campos que não são inputs nativos (`field.value`/`onChange` manuais, `fieldState.error` já resolvido pelo schema) — é o caminho certo pra qualquer componente de input próprio.
 
-Um validador de campo isolado (`z.string()...`) não enxerga campos irmãos — por isso `password === confirmPassword` só pode ser checado com `.refine()` no **objeto inteiro**, depois que todos os campos já existem. O detalhe fácil de esquecer é o `path: ["confirmPassword"]`: sem ele, o erro de senhas diferentes cai num nível "geral" do formulário, não no campo `confirmPassword` — e a maioria das integrações de UI (`errors.confirmPassword?.message`, aula 12) simplesmente não mostraria nada. Esse padrão (regra de objeto + `path` apontando pro campo certo) existe do mesmo jeito em outras libs de schema (Yup usa `.test()` com `path` equivalente) — não é peculiaridade do Zod.
-
-### Onde o arquivo mora: colocado com o form, não numa pasta compartilhada
-
-`SignUpSchema.ts` vive dentro de `SignUpForm/`, ao lado do componente que o usa — faz sentido enquanto só esse formulário usa esse formato de dado. Se outra tela precisar validar o mesmo shape (ex.: uma tela de "completar perfil" reaproveitando `fullname`/`email`), vale mover pra um lugar compartilhado (`src/domain/**` ou uma pasta `schemas/`) — mesma decisão de "onde a interface mora" já discutida no módulo anterior (repository, `IFeedbackService`), agora aplicada a schemas de validação.
-
-## 12. Formulário com React Hook Form
-
-**Status: implementado.** Conecta o schema da aula 11 ao `SignUpForm`. Três conceitos, cada um reaproveitável fora de React Hook Form (RHF):
-
-### `resolver` é Ports & Adapters, de novo
+**Tipo do form ≠ tipo da operação, de propósito:**
 
 ```ts
-const { control, handleSubmit } = useForm<SignUpSchema>({
-  resolver: zodResolver(signUpSchema),
-});
+type SignUpSchema = { fullname, email, password, confirmPassword };  // preocupação de FORM
+type AuthSignUpParams = { fullname, email, password };               // preocupação de OPERAÇÃO
 ```
 
-RHF não sabe o que é Zod — ele define um contrato abstrato de "resolver" (dado o valor atual do form, devolva `{ values, errors }`), e `zodResolver` é o **adapter** que fala Zod nesse contrato (existe `yupResolver`, `joiResolver` etc. pro mesmo contrato). É exatamente o padrão Interface→Adapter do módulo de arquitetura (`ICityRepository`/`SupabaseCityRepository`, `IStorage`/`AsyncStorage`) — só que quem define a "porta" aqui não é este projeto, é a própria lib de formulário.
+`confirmPassword` é conveniência de UX, o domínio nunca deveria saber que essa técnica existe. Dois tipos que hoje se parecem mas respondem perguntas diferentes **não são o mesmo tipo** — a tradução explícita entre eles (campo a campo, na tela) é o Mapper de sempre, agora na fronteira form → operação em vez de banco → domínio.
 
-### A cadeia de inferência de tipos — e onde ela quebra de verdade neste código
+## 11. TypeScript por baixo dos panos: onde a garantia para
 
-```
-signUpSchema (Zod)  →  SignUpSchema = z.infer<typeof signUpSchema>  (aula 11)
-     →  useForm<SignUpSchema>(...)  →  Controller name="email" (autocomplete + type-check)
-     →  handleSubmit(onSubmit)  →  onSubmit(data: SignUpSchema)
-```
+**Tese central desta seção:** um tipo do TypeScript só protege o código que ele mesmo tipou — toda vez que um valor atravessa uma fronteira que você não controla (uma lib de terceiros decidindo quando chamar sua função, uma declaração de função sem anotação, um membro de classe nunca implementado), a garantia para de valer, silenciosamente, e o `tsc` não necessariamente avisa. Quatro instâncias concretas encontradas neste módulo:
 
-Cada elo dessa cadeia é checado pelo compilador — errar o nome de um campo em `name="emial"` já quebra o build. Mas a cadeia só vale o elo mais fraco: em `app/sign-up.tsx`,
+1. **Cadeia de inferência que quebra no elo mais fraco.** `signUpSchema → z.infer → useForm<SignUpSchema> → Controller` é checada ponta a ponta pelo compilador — até chegar numa `function handleSignUp(data) {}` declarada à parte, onde `data` vira `any` (`TS7006`, confirmado). Uma `function` nomeada **não recebe tipagem contextual** por ser passada depois como prop; uma arrow function inline ou uma variável já tipada, sim. Sempre valide o `tsc` no ponto de consumo final, não só na origem do tipo.
 
-```ts
-function handleSignUp(data) { // TS7006: Parameter 'data' implicitly has an 'any' type
-  console.log(data);
-}
-```
+2. **Tipo "garantido" que não sobrevive à fronteira de uma lib.** `CustomToast({ type }: Feedback)` promete `type: FeedbackType`, nunca `undefined` — mas a lib de toast chama essa função internamente, num render ocioso, antes de qualquer `.show()`, com `props` vazio. `Feedback` é um tipo deste projeto; a função que decide *quando* chamar `CustomToast` é da lib, que não conhece `Feedback`. Fix é defesa em **runtime** no ponto de uso (`toastColors[type ?? "success"]`), não uma tentativa de "consertar o tipo" — não dá, quem chama é a lib.
 
-`data` está `any` — confirmado pelo `tsc`. Diferente de uma arrow function inline (`<SignUpForm onSubmit={(data) => ...} />`) ou de uma variável já tipada (`const handleSignUp: SignUpFormProps["onSubmit"] = (data) => ...`), uma `function` nomeada e declarada à parte **não recebe tipagem contextual** só por ser passada depois como prop — o TS não "olha pra frente". Resultado prático: toda a inferência cuidadosamente encadeada desde o Zod se perde no último passo, silenciosamente (o código roda, só não tem mais segurança de tipo nenhuma dentro de `handleSignUp`). Lição agnóstica de TS: **uma cadeia de inferência é tão forte quanto o elo menos tipado** — vale sempre checar o `tsc` no ponto de consumo final, não só na origem do tipo.
+3. **Classe "implementando" uma interface sem implementar um membro.** `sendResetPasswordEmail: (email: string) => Promise<void>;` sem `=` declara o tipo, não o corpo — `TS2564` no melhor caso (com `strictPropertyInitialization`), `TypeError` em runtime no pior. Um objeto literal implementando a mesma interface não permite esse descuido — falta a propriedade de verdade, erro de shape na cara.
 
-### `Controller` (render prop) vs. `register` — por que este projeto precisa do primeiro
+4. **`@ts-ignore` em vez de narrowing.** `error: unknown` (retorno de `catch`) acessado como `error.message` via `@ts-ignore` silencia o compilador sem resolver a causa. Correto é `error instanceof Error ? error.message : String(error)`.
 
-RHF tem dois jeitos de ligar um campo: `register()` (funciona direto com um `<input>` nativo via `ref`) e `<Controller control={control} name="..." render={({ field, fieldState }) => ...} />` (pra qualquer componente que não seja um input nativo reconhecível pela lib). Como `TextInput` (aula 5) é um componente próprio, `Controller` é o caminho — ele expõe `field.value`/`field.onChange` (você liga manualmente) e `fieldState.error` (o erro **só daquele campo**, já resolvido pelo schema):
+**Como isso muda a forma de revisar código:** não pergunte só "o TypeScript aceitou?" — pergunte "esse valor atravessou alguma fronteira que o TypeScript não enxerga por dentro (lib externa, função sem anotação, classe com membro só de tipo)?". Se sim, o `tsc` verde não é garantia nenhuma nesse ponto específico.
 
-```tsx
-<Controller
-  control={control}
-  name="email"
-  render={({ field, fieldState }) => (
-    <TextInput
-      value={field.value}
-      onChangeText={field.onChange}
-      errorMessage={fieldState.error?.message} // exatamente a prop que a aula 5 já previa
-    />
-  )}
-/>
-```
+## 12. Segurança em fluxo de auth com redirect
 
-**Corrigindo uma previsão da aula 5:** eu tinha marcado a falta de `forwardRef` no `TextInput` como bloqueio. Não é bem assim — `Controller` existe justamente pra não depender de `ref`, então a ligação básica de valor/erro funciona sem `forwardRef`. O que ainda vai doer é foco programático (focar o próximo campo, focar o primeiro campo inválido) — e isso é exatamente o assunto da aula 14, então o alerta original só foi adiado pro lugar certo, não invalidado.
-
-## 13. Sign Up Operation
-
-**Status: implementado.** Dois pontos, os dois já vistos antes neste documento em formas diferentes — o valor da aula é confirmar que são **regras**, não coincidência.
-
-### Tipo do form ≠ tipo da operação, de propósito
-
-```ts
-// src/ui/containers/SignUpForm/SignUpSchema.ts (aula 11) — preocupação de FORMULÁRIO
-type SignUpSchema = { fullname: string; email: string; password: string; confirmPassword: string };
-
-// src/domain/Auth/IAuthRepository.ts — preocupação de OPERAÇÃO de domínio
-export type AuthSignUpParams = { fullname: string; email: string; password: string };
-```
-
-```ts
-// app/sign-up.tsx — a tradução explícita entre os dois, campo a campo
-function handleSignUp(formValues: SignUpSchema) {
-  signUp({ email: formValues.email, fullname: formValues.fullname, password: formValues.password });
-}
-```
-
-`AuthSignUpParams` **não reaproveita** `SignUpSchema`, mesmo os dois tendo quase os mesmos campos hoje. É proposital: `confirmPassword` é uma conveniência de validação client-side — o domínio nunca deveria saber que essa técnica existe, porque "confirmar senha" não é uma regra de negócio, é uma decisão de UX do formulário. Se amanhã o form ganhar um checkbox "aceito os termos" (também UI-only), ele entra só em `SignUpSchema`. Se a operação de sign-up precisar de um campo que o form não coleta (ex.: um código de indicação lido de deep link), ele entra só em `AuthSignUpParams`. **Regra agnóstica de qualquer stack:** dois tipos que hoje se parecem, mas representam perguntas diferentes ("o que o formulário precisa validar" vs. "o que a operação de negócio precisa") **não são o mesmo tipo** — são coincidentemente parecidos, e reusar um pelo outro acopla dois lados que deveriam poder mudar independente. Mesmo raciocínio do `DTO`/Mapper já visto no módulo de arquitetura (`supabaseAdapter` convertendo linha de banco pra `City`), aqui na fronteira form → operação em vez de banco → domínio.
-
-### A regrinha de navegação, confirmada pela repetição
-
-```ts
-const { mutate: signUp } = useAuthSignUp({ onSuccess: router.back });
-```
-
-Terceira vez que esse exato "recipe" aparece (`useAuthSendResetPasswordEmail` na aula 10, agora `useAuthSignUp`): a mutation recebe `options?: UseAppMutationOptions<void>`, chama `options?.onSuccess?.()` e **sempre** dispara o feedback genérico; quem decide navegar é a tela. Duas ocorrências já seriam sinal de regra (aula 8); três confirmam que é uma decisão deliberada do projeto, não coincidência — e reforça que **`useAuthSignIn` continua sendo a exceção** que ainda hardcoda `router.replace` dentro de `AuthContext` (seção 2), agora claramente em minoria (2 de 3 operações seguem a regra).
-
-**Nota lateral:** o adapter `inMemoryAuthRepository.signUp` não é um mock totalmente vazio — ele checa duplicidade de e-mail (`throw new Error("user already exist")`) antes de "cadastrar". Um in-memory adapter pode carregar uma regra de negócio real e simples assim, quando isso ajuda a exercitar o caminho de erro (`feedbackService` disparando "erro ao cadastrar") durante o desenvolvimento, sem precisar de backend nenhum.
-
-## 14. Formulário e Teclado
-
-*(placeholder — comportamento de teclado em formulários mobile: `KeyboardAvoidingView`/scroll, não é decisão de arquitetura mas afeta UX de formulário diretamente.)*
-
-## 15. Supabase Auth Repository
-
-**Status: implementado.** Fecha exatamente a pendência registrada na seção 12 do `arquitetura-frontend.md`: `SupabaseRepositories.auth` deixa de ser `inMemoryAuthRepository` e passa a ser `SupabaseAuthRepository` de verdade — e `app/_layout.tsx` troca `InMemoryRepository` por `SupabaseRepositories` **pra tudo** (city, category e agora auth). É o app inteiro rodando no backend real, sem nenhuma tela, caso de uso ou componente mudar uma linha — o pagamento final da aposta em DIP + Composition Root do módulo anterior.
-
-### Classe vs. objeto de funções — o mesmo contrato, dois estilos
-
-```ts
-// estilo função (SupabaseCityRepository, aula 7 do módulo anterior)
-export const SupabaseCityRepository: ICityRepository = { findAll, findById, getRelatedCities };
-
-// estilo classe (esta aula)
-export class SupabaseAuthRepository implements IAuthRepository {
-  signIn = async (email: string, password: string): Promise<AuthUser> => { /* ... */ };
-  signUp = async (params: AuthSignUpParams): Promise<void> => { /* ... */ };
-  signOut = async (): Promise<void> => { /* ... */ };
-}
-```
-
-Os dois satisfazem a interface do mesmo jeito — tipagem estrutural, já documentada na seção 7 do módulo anterior: o app só enxerga `IAuthRepository`/`ICityRepository`, nunca sabe se por trás tem `class` ou objeto. **Quando cada estilo compensa, de forma agnóstica de projeto:**
-- **Objeto + funções soltas:** sem estado por instância, sem necessidade de `this`, zero boilerplate de `class`/`constructor` — mais simples quando o repository só orquestra chamadas (como aqui, nenhum dos dois precisa de config própria).
-- **Classe:** compensa quando existe estado/configuração por instância (ex.: um client HTTP configurado no `constructor`, em vez de importar um singleton), estado privado compartilhado entre métodos, ou testes que dependem de múltiplas instâncias com configs diferentes. Neste projeto, nem `city`/`category` nem `auth` realmente precisam disso — a escolha aqui foi estilística, confirmando o ponto: **o padrão Repository não exige um dos dois, a interface é o que importa.**
-
-### Onde a classe escondeu um bug que o objeto não deixaria passar
-
-```ts
-export class SupabaseAuthRepository implements IAuthRepository {
-  signIn = async (...) => { /* ... */ };
-  signUp = async (...) => { /* ... */ };
-  signOut = async (...) => { /* ... */ };
-  sendResetPasswordEmail: (email: string) => Promise<void>; // ⚠️ nunca implementado
-}
-```
-
-Confirmado com `tsc`: `error TS2564: Property 'sendResetPasswordEmail' has no initializer and is not definitely assigned`. Essa linha **declara o tipo** do campo, mas nunca atribui uma função — não é uma implementação, é só uma anotação. Chamar `auth.sendResetPasswordEmail(email)` em runtime (a tela de reset password, aula 10) quebraria com "not a function", e agora que o composition root aponta pra `SupabaseRepositories`, esse caminho está ativo de verdade.
-
-**Isso é exatamente o ponto que vale comparar com o estilo objeto:** se `SupabaseAuthRepository` fosse `export const SupabaseAuthRepository: IAuthRepository = { signIn, signUp, signOut }`, faltar `sendResetPasswordEmail` geraria um erro de shape bem mais direto — "Property 'sendResetPasswordEmail' is missing in type". Uma `class` permite escrever algo que **parece** progresso (uma anotação de tipo) sem ser implementação de verdade; um objeto literal não dá essa brecha. Não é motivo pra nunca usar classe — é motivo pra saber que, com classe, "implements a interface" não é garantia de "implementou todos os métodos com corpo de verdade" só de bater o olho.
-
-### Detalhes menores, mesma família de padrões já vistos
-
-- **Métodos como class fields com arrow function** (`signIn = async (...) => {}`, em vez de `async signIn(...) {}`): a razão de existir desse estilo é preservar o `this` da instância mesmo se o método for destruturado/passado solto por aí — aqui nenhum método usa `this`, então não era estritamente necessário, mas é um hábito defensivo comum em bases que usam classe.
-- **`toAuthUser` no `supabaseAdapter`**: mais um Mapper (aula 3 do módulo anterior), agora lidando com uma divergência de **opcionalidade**, não só de nome de campo — `email` é `string | null | undefined` no tipo do Supabase, mas obrigatório no domínio, daí o `if (!supabaseUser.email) throw ...` antes de montar o `AuthUser`.
-- **`SupaBaseAuthUser` como alias do `AuthUser` importado da lib**: mesmo truque de renomear o import nativo/de terceiros pra liberar o nome "natural" pro tipo do projeto, já visto na aula 5 com `RNTextInput`.
-
-## 16. Redefinição de Senha
-
-**Status: implementado, e é a aula mais sensível do módulo — envolve token de autenticação atravessando e-mail.** Fecha o bug pendente da seção 15 (`sendResetPasswordEmail` sem corpo) e resolve pra onde o link do e-mail deve apontar:
-
-```ts
-sendResetPasswordEmail = async (email: string): Promise<void> => {
-  await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.EXPO_PUBLIC_WEB_URL}/reset-password`,
-  });
-};
-```
-
-O link do e-mail aponta pra uma **aplicação web** (`EXPO_PUBLIC_WEB_URL`), não de volta pro app mobile via deep link. Isso não é detalhe de implementação — é a decisão de segurança da aula.
-
-### Por que não usar deep link direto pro app pra carregar o token
-
-Da [documentação oficial de segurança do React Native](https://reactnative.dev/docs/security):
+Base: [documentação oficial de segurança do React Native](https://reactnative.dev/docs/security).
 
 > "Deep links are not secure and you should never send any sensitive information in them."
 
-O motivo, agnóstico de Supabase ou qualquer provedor de auth: um custom URL scheme (`meuapp://reset-password?access_token=...`) **não tem registro centralizado** — qualquer app instalado no device pode registrar o mesmo scheme. No iOS o sistema escolhe silenciosamente qual app abre o link; no Android existe um diálogo, mas o usuário raramente entende o que está escolhendo. Um app malicioso que registre o mesmo scheme pode sequestrar o link e capturar o `access_token` que vinha dentro dele. A própria doc do RN faz a distinção: `app://products/1` é inofensivo (é só um id); mandar um token pelo mesmo canal é o problema.
+**Por que, agnóstico de provedor de auth:** um custom URL scheme (`meuapp://reset?token=...`) não tem registro centralizado — qualquer app pode reivindicar o mesmo scheme e sequestrar o link (iOS escolhe silenciosamente, Android mostra um diálogo que o usuário raramente entende). Risco extra específico de e-mail: scanners corporativos de phishing pré-visitam links automaticamente e podem consumir um token de uso único antes do usuário clicar.
 
-**Um risco extra, específico de e-mail, que vale saber:** muitos provedores de e-mail corporativo/antivírus **pré-visitam** links recebidos automaticamente pra escanear phishing/malware, antes do usuário sequer abrir a mensagem. Se o link contém um token de uso único, esse scanner pode consumir o token sozinho — o usuário clica depois e o link já expirou, ou pior, o token vaza pro serviço de scan. Token em URL de e-mail é um problema mesmo sem nenhum app malicioso no meio.
+**Por que rotear pela web ajuda:** HTTPS não tem ambiguidade de dono; e o `redirectTo` de qualquer provedor de auth (Supabase incluso) deveria ser validado contra uma **allowlist** configurada por você — sem isso, é um open redirect (atacante troca o destino, phishing usando um domínio confiável como isca). Se o fluxo precisar voltar pro app nativo, a forma seguindo a doc do RN é **Universal Link (iOS) / App Link (Android)** — vinculados a um domínio HTTPS verificado pelo SO, não um custom scheme sujeito a colisão.
 
-### Por que passar pela web ajuda
+**Princípio geral por trás disso: nunca o token final, sempre um código de troca.** É o que **PKCE** formaliza em OAuth2/OIDC — o link carrega um código de uso único, só trocável pelo token real por quem gerou um segredo local (`code_verifier`, nunca exposto na URL). Mesmo que o código vaze no caminho, sozinho não vale nada.
 
-- **HTTPS não tem ambiguidade de dono** — ao contrário de um custom scheme, um domínio `https://` é resolvido de forma padrão por qualquer cliente de e-mail/browser, sem disputa de "qual app abre isso".
-- **O `redirectTo` do Supabase é validado contra uma allowlist** configurada no painel do projeto — Supabase recusa redirecionar pra qualquer URL que você não tenha autorizado antes. Esse é um princípio agnóstico de plataforma: **todo provedor de auth com opção de `redirectTo`/`callback URL` precisa dessa allowlist configurada**, senão você criou um open redirect — um atacante poderia trocar o destino do link por um domínio próprio, phishing perfeito porque o e-mail realmente veio do Supabase.
-- Se o fluxo realmente precisar voltar pro app nativo depois da parte web, a forma recomendada pela doc do RN é **Universal Link (iOS) / App Link (Android)** — não um custom scheme. Universal/App Links são verificados pelo sistema operacional via um arquivo hospedado no seu próprio domínio (`apple-app-site-association`/Digital Asset Links), então só o app dono comprovado daquele domínio pode recebê-los — não têm o problema de colisão de scheme.
-
-### O princípio geral por trás disso: nunca o token final, sempre um passo de troca
-
-A mesma doc do RN aponta o padrão da indústria pra esse problema, que vale mesmo fora do RN: **PKCE** (usado em OAuth2/OIDC). Em vez de mandar o token de sessão diretamente por um link, o fluxo manda um **código de uso único**, que só quem iniciou o fluxo consegue trocar pelo token de verdade (via um segredo gerado localmente, o `code_verifier`, nunca exposto na URL). Mesmo que o código vaze no meio do caminho (scanner de e-mail, log de servidor, app malicioso), ele sozinho não vale nada. O Supabase já aplica uma variante desse princípio no fluxo de recovery — o token do link é de curta duração e de uso único, não é a sessão final.
-
-### Achado real neste projeto: onde o token de sessão *de fato* é guardado
-
+**Achado real e atual neste código, não hipotético:**
 ```ts
 // src/infra/repositories/adapters/supabase/supabase.ts
-export const supabase = createClient(envs.url, envs.anonKey, {
-  auth: { storage: AsyncStorage, persistSession: true /* ... */ },
-});
+createClient(url, key, { auth: { storage: AsyncStorage, persistSession: true } });
 ```
-
-O cliente Supabase usa `AsyncStorage` **puro** (não o `IStorage`/`AsyncStorage` da aula 3 deste módulo — é o import direto de `@react-native-async-storage/async-storage`) pra persistir a sessão inteira, incluindo `access_token`/`refresh_token`. A doc do RN é explícita sobre isso:
-
-> AsyncStorage: bom pra dado não-sensível (estado do Redux, cache); **não** pra token/segredo. Pra isso, iOS tem Keychain, Android tem Encrypted Shared Preferences/Keystore.
-
-Isso é um risco real e atual, não hipotético — `AsyncStorage` não é criptografado; num device comprometido (root/jailbreak), o token de sessão fica legível em texto plano. **Correção natural, dado que o projeto já tem o `IStorage` (aula 3) como porta trocável:** criar um `SecureStorageAdapter implements IStorage` sobre `expo-secure-store` (que usa Keychain/Keystore por baixo) e usá-lo especificamente pra tudo que for sessão/token — sem mexer no contrato, só trocando o adapter, exatamente o motivo de `IStorage` existir.
-
-## 17. Feedback com Toast Component
-
-**Status: implementado — fecha o módulo.** Confirma exatamente o que ficou previsto na seção 15: `ToastFeedback` chega como um terceiro adapter de `IFeedbackService`, ao lado de `AlertFeedback`/`ConsoleFeedback`, trocado com uma linha no Composition Root (`<FeedbackProvider value={ToastFeedback}>`). E a paleta `fbWarningBg`/`fbInfoBg` que entrou no tema lá na aula 5 "pensando em reuso" finalmente é usada aqui. A aula também deixou um bug real, ótimo pra ilustrar os três temas que você marcou.
-
-### O bug: tipo TypeScript "garante" algo que a biblioteca não garante em runtime
-
-```tsx
-function CustomToast({ type, description, message }: Feedback) {
-  const { backgroundColor, textColor } = toastColors[type]; // quebra
-  // ...
-}
-
-const toastConfig: ToastConfig = {
-  success: ({ props }) => <CustomToast {...props} />,
-  error: ({ props }) => <CustomToast {...props} />,
-  warning: ({ props }) => <CustomToast {...props} />,
-  info: ({ props }) => <CustomToast {...props} />,
-};
-```
-
-`<Toast />` é montado uma única vez, sem props, direto no `RootLayout` — ele só existe pra ficar esperando alguém chamar `Toast.show(...)`. O problema: a lib `react-native-toast-message` já renderiza algo internamente **antes** de qualquer `.show()` acontecer (estado ocioso), e nesse primeiro render ela chama `toastConfig[algumTipo]({ props: undefined })` — ou seja, `CustomToast` roda com `type` **de fato `undefined`**, mesmo a assinatura dizendo `{ type }: Feedback` (que promete `type: FeedbackType`, nunca `undefined`).
-
-**Por que a tipagem não pegou isso:** `Feedback`/`FeedbackType` são tipos *deste projeto*; `ToastConfig` é um tipo *da lib*. A lib decide quando e com que `props` chama sua função de render, e o tipo dela pra `props` não sabe nada sobre `Feedback` — então o TypeScript não tem como cruzar as pontas e avisar "essa função pode ser chamada sem os dados que você está assumindo". **Lição agnóstica de qualquer projeto TS que integra uma lib de terceiros via render prop/callback:** um tipo só protege até a fronteira de quem o declarou — do outro lado de uma callback controlada por uma lib externa, é a lib que decide o que de fato chega, não o seu `type`.
-
-**O fix, e por que ele é o certo:**
-```ts
-const { backgroundColor, textColor } = toastColors[type ?? "success"];
-```
-Não é "consertar o tipo" (não dá — a lib é quem chama, fora do seu controle) — é uma **defesa em runtime** no ponto exato onde um valor cruza essa fronteira: assumir um default sensato quando o dado "garantido" pelo tipo não chega de verdade. Regra prática: sempre que uma prop/callback é invocada por código que você não escreveu (lib externa, evento do SO, callback de terceiro), trate o tipo como uma expectativa, não como uma garantia — e proteja o ponto de uso, não só a assinatura.
-
-### Componentização: um componente, quatro entradas de configuração
-
-```ts
-const toastConfig: ToastConfig = {
-  success: ({ props }) => <CustomToast {...props} />,
-  error: ({ props }) => <CustomToast {...props} />,
-  warning: ({ props }) => <CustomToast {...props} />,
-  info: ({ props }) => <CustomToast {...props} />,
-};
-```
-
-Mesma ideia de `Record<Variant, Config>` da aula 6 (`Button`), só que aqui o "config" de cada variante é a própria função de render — `CustomToast` é escrito **uma vez** e reaproveitado nas quatro entradas, parametrizado inteiramente pela cor que `toastColors[type]` resolve. Não existem quatro componentes de toast, existe um componente e um mapa de variante — o mesmo princípio, de novo, em mais uma camada.
-
-### Interfaces: o contrato não mudou, só o vocabulário cresceu
-
-`IFeedbackService` continua exatamente `{ send: (feedback) => void }` — a mesma assinatura que `AlertFeedback` e `ConsoleFeedback` já implementavam. O que cresceu foi só o **dado** que passa por essa porta: `FeedbackType` ganhou `"warning" | "info"`. Como `ConsoleFeedback` mapeia cor por tipo via `Record<FeedbackType, string>` (mesma exaustividade da aula 6), o TypeScript **obrigou** a atualização das duas novas cores lá — sem isso o projeto não compilava. `AlertFeedback`, que não olha pro `type` (só mostra `message`/`description` sempre do mesmo jeito), não precisou mudar nada. É a interface bem desenhada mostrando sua vantagem: estender o vocabulário não quebrou nenhum adapter existente, e o compilador cobrou exatamente quem precisava se atualizar.
-
-**Nota menor, mesma família de problema:** em `useAuthSignIn`, o novo `description: error.message` veio com um `// @ts-ignore` — `error` é `unknown` (retorno do `catch` em `useAppMutation`), então `.message` não é seguro sem checar antes (`error instanceof Error ? error.message : String(error)`). `@ts-ignore` silencia o erro do compilador, não resolve a causa — mesma categoria de "confiar em algo que o tipo não garante" do bug principal desta aula, só que aqui foi mascarado, não corrigido.
-
-Com isso fecha o módulo de Autenticação e Formulários — sessão persistida com DIP (aulas 2-3), componentes de formulário reutilizáveis com validação schema-first (aulas 5-6, 11-12), operações de Auth com navegação injetada pela tela (aulas 10, 13), backend real via troca de adapter (aula 15), segurança no fluxo de reset (aula 16) e, por fim, feedback ao usuário generalizado pra três canais diferentes sem nunca mudar quem o consome.
+O cliente Supabase persiste `access_token`/`refresh_token` em `AsyncStorage` **puro** — não criptografado, não o `IStorage` seguro deste próprio módulo. A doc do RN é explícita: AsyncStorage serve pra dado não-sensível; token pede Keychain (iOS) / Keystore-Encrypted SharedPreferences (Android). **Fix natural, dado que o projeto já tem `IStorage` como porta trocável:** um `SecureStorageAdapter` sobre `expo-secure-store`, usado especificamente pra sessão/token — trocar o adapter, não o contrato.
 
 ---
 
-## Comparações rápidas
+## 13. Tabela de trade-offs
 
-| Tema | Problema que resolve | Estado neste projeto |
+| Decisão | Quando escolher A | Quando escolher B |
 |---|---|---|
-| Context para DI (`Repositories`, `IFeedbackService`) | Injetar uma implementação trocável de uma interface | Implementado (módulo anterior) |
-| Context para estado compartilhado (`AuthContext`) | Compartilhar dado que muda em runtime entre telas | Implementado — `authUser`/`isReady` |
-| Flag `isReady` / hidratação de sessão | Evitar redirect errado antes do storage carregar | Implementado em `app/(protected)/_layout.tsx` |
-| DIP em storage (`IStorage`) | Trocar `AsyncStorage` sem tocar em `AuthContext` | Implementado — `IStorage`/`StorageContext`/adapter `AsyncStorage` |
-| Ordem de Providers dependentes | `AuthProvider` usa `useStorage()` por dentro | `StorageProvider` envolve `AuthProvider` no composition root |
-| Splash Screen ligada à hidratação | Evitar tela em branco enquanto storage carrega | Implementado — `SplashScreen.hide()` só quando `isReady` |
-| Navegação dentro do domínio (`router.replace` em `AuthContext`) | — | Ponto em aberto, mesmo tipo de discussão do `IFeedbackService` |
-| Focus/blur em input customizado | Estilizar estado de foco sem `:focus` de CSS | Implementado (`onFocus`/`onBlur` + estado local) |
-| `style` mesclado vs. sobrescrito | Deixar o consumidor customizar o wrapper | Bug: `style` do chamador é descartado (sobrescrito, não mesclado) |
-| `forwardRef` em componente de input | Focar campo programaticamente (próximo campo, campo inválido) | Faltando — vai doer nas aulas 12 e 14 |
-| `Record<Variant, Config>` para variantes | Exaustividade garantida pelo compilador, sem `if`/`switch` | Implementado no `Button` — mesma ideia do shadcn/ui e do `cva` |
-| Loading/disabled no Button | Feedback visual de mutation em andamento | Faltando — `isLoading` de `useAuthSignIn` ainda não é consumido |
-| Imagem multi-densidade (`@2x`/`@3x`) | Nitidez em qualquer tela sem inflar o tamanho exibido | Implementado (`logo.png`/`@2x`/`@3x`) — Metro escolhe o arquivo, `style` define o tamanho lógico |
-| Texto aninhado (`<Text><Text/></Text>`) | Estilizar um trecho dentro de uma frase | Implementado em "Ainda não tem uma conta? Criar" |
-| Extrair componente na 2ª ocorrência | Evitar abstração prematura | `Logo` extraído só quando 2 telas repetiram o bloco — mas ficou sem props de espaçamento |
-| `space-between` com 2 filhos assimétricos | Título "centralizado" num header | Bug: `Header` cola o título na borda direita em vez de centralizar |
-| `asChild` (Link/Radix/React Aria) | Injetar comportamento sem forçar wrapper próprio | Implementado no `Link` de "Esqueceu sua senha"/"Criar" |
-| `navigate()` vs. `back()` | Ir pra um destino novo vs. retornar de onde veio | Implementado via props (`href`/`goBackOnPress`) no `TextLink` |
-| Union discriminada pra props mutuamente exclusivas | Impedir combinação inválida de props em tempo de compilação | Pendente no `TextLink` (`href`/`goBackOnPress` ainda são independentes) |
-| Navegação injetada via callback (IoC) | Manter caso de uso sem depender de `expo-router` | Implementado em `useAuthSendResetPasswordEmail` e `useAuthSignUp` (2 de 3 mutations de Auth) |
-| Consistência entre casos de uso | Mesma regra aplicada em todas as mutations de Auth | `useAuthSignIn` é a exceção — ainda hardcoda `router.replace` dentro de `AuthContext` |
-| Tipo de form ≠ tipo de operação | Cada camada evolui sem acoplar a outra | Implementado: `SignUpSchema` (form) ≠ `AuthSignUpParams` (domínio), tradução explícita em `sign-up.tsx` |
-| Composition root 100% Supabase | App inteiro no backend real, zero mudança em tela/caso de uso | Implementado — `app/_layout.tsx` usa `SupabaseRepositories` pra city, category e auth |
-| Classe implementando interface incompleta | TS ainda assim "parece" implementar, mas falta o corpo | Bug confirmado (`TS2564`): `sendResetPasswordEmail` só tem tipo, nunca foi implementado em `SupabaseAuthRepository` |
-| Token em deep link | Evitar sequestro de link por app malicioso ou scanner de e-mail | Corrigido: `redirectTo` aponta pra web (HTTPS), não pra um custom scheme do app |
-| Allowlist de `redirectTo` | Impedir open redirect no fluxo de auth | Depende de configuração no painel do Supabase — princípio vale pra qualquer provedor de auth |
-| Storage de token de sessão | Token não pode ficar em storage sem criptografia | **Risco real**: `supabase.ts` usa `AsyncStorage` puro pra sessão (access/refresh token), não o `IStorage` seguro |
-| Terceiro adapter de `IFeedbackService` | Trocar canal de feedback sem tocar em quem consome | Implementado: `ToastFeedback` ao lado de `AlertFeedback`/`ConsoleFeedback` |
-| Tipo "garantido" que não sobrevive à fronteira de uma lib | `type` chega `undefined` mesmo com `Feedback` dizendo que não pode | Bug real em `CustomToast` — corrigido com `toastColors[type ?? "success"]` |
-| Exaustividade cobrando atualização de adapter | Union cresce, `Record` força os consumidores a se atualizar | `ConsoleFeedback` teve que ganhar cores novas; `AlertFeedback` não precisou |
-| `@ts-ignore` sobre `unknown` | Suprime o erro, não resolve a falta de narrowing | `useAuthSignIn` usa `@ts-ignore` em vez de `error instanceof Error` |
-| Formulário como caixa-preta | Tela não conhece a lib de form state por trás | Implementado: `SignUpForm` recebe só `onSubmit` |
-| Schema-first (`z.infer`) | Tipo e validação nunca dessincronizam | Implementado em `signUpSchema`/`SignUpSchema` |
-| Validação cruzada (`.refine` + `path`) | Erro aparece no campo certo, não no formulário todo | Implementado (`password` === `confirmPassword`) |
-| `resolver` do RHF | Desacoplar RHF de qualquer lib de schema específica | Implementado (`zodResolver`) — mesmo padrão Interface/Adapter do módulo anterior |
-| Cadeia de inferência de tipos (Zod → RHF → callback) | Tipo nunca diverge da validação, ponta a ponta | Quebra em `sign-up.tsx`: `handleSignUp(data)` é `any` (TS7006) |
-| `Controller` vs. `register` (RHF) | Ligar campo customizado sem depender de `ref` nativo | Implementado — resolve o valor/erro sem precisar de `forwardRef` no `TextInput` |
+| Context: DI vs. estado | Implementação trocável, decidida uma vez (Repository, Feedback) | Valor que muda em runtime, lido por várias telas (Auth) |
+| Repository: classe vs. objeto | Precisa de estado/config por instância | Só orquestra chamadas — objeto é mais simples e mais seguro contra membro não implementado |
+| Navegação: `navigate` vs. `back` | Destino novo, sem relação com histórico | Retornar pra tela de onde já veio (preserva estado, anima certo) |
+| Variante de estilo: `Record` vs. `if/switch` | Sempre `Record` — exaustividade de graça | `switch` só se já existir o truque `never` |
+| Storage: `AsyncStorage` vs. `SecureStorage` | Dado não-sensível (preferências, cache) | Token, senha, qualquer segredo |
+| Deep link vs. Universal/App Link vs. web | Nunca deep link com dado sensível | Universal/App Link se precisa voltar pro app; web se só precisa de um formulário |
+| `@ts-ignore` vs. narrowing | Nunca, exceto limitação real da lib documentada | Sempre que der pra estreitar o tipo (`instanceof`, guard) |
 
-## Leituras complementares
+## 14. Mapa aula → conceito
 
-- **[React Native — Security](https://reactnative.dev/docs/security)** (documentação oficial) — base da seção 16: por que deep link não é seguro pra dado sensível, AsyncStorage vs. Keychain/Keystore pra token, e PKCE como padrão de troca segura em fluxos de auth com redirect. Vale reler antes de desenhar qualquer fluxo de auth/deep link em outro projeto, não só o de reset de senha.
+| Aula | Conceito principal | Seção |
+|---|---|---|
+| 2-4 | Context de estado, hidratação de sessão, Splash | §1 |
+| 3 | `IStorage`, ordem de Providers | §2, §3 |
+| 5 | `TextInput`: foco, borda, `style`, `forwardRef` | §5 |
+| 6 | `Button`: `Record<Variant>`, `satisfies` | §6 |
+| 7-8 | Imagem multi-densidade, `Header`, extração de componente, `asChild` | §7, §8 |
+| 9-10, 13 | `TextLink`, `navigate`/`back`, IoC via callback, tipo form ≠ operação | §9, §10 |
+| 11-12 | Zod schema-first, `resolver`, `Controller`, cadeia de inferência | §10, §11 |
+| 15 | Classe vs. objeto no Repository, membro de classe não implementado | §2, §11 |
+| 16 | Deep link, `redirectTo`, PKCE, storage de token | §12 |
+| 17 | Terceiro adapter de `IFeedbackService`, tipo que não sobrevive à lib | §2, §11 |
 
 ## Glossário
 
-- **Context para DI vs. Context para estado:** mesmo `createContext`, dois papéis diferentes — um guarda uma *implementação* trocável (ver módulo de arquitetura); o outro guarda um *valor* que muda com o tempo.
-- **Hidratação de sessão (session hydration):** processo assíncrono de carregar a sessão persistida antes de decidir se o usuário está logado; sem uma flag de "pronto", a UI decide cedo demais.
-- **Storage como Port genérico (`IStorage`):** em vez de uma interface por feature (`IAuthStorage`), uma única porta key-value reutilizável por qualquer parte do app que precise persistir algo.
-- **Ordem de composition root:** quando um Provider usa o hook de outro por dentro, ele precisa estar aninhado dentro do Provider do qual depende — a ordem reflete o grafo de dependência, não a ordem de criação dos módulos.
-- **`forwardRef`:** técnica do React para expor a instância/nó interno de um componente wrapper ao componente pai — essencial em inputs customizados que precisam ser focados programaticamente por fora.
-- **Style merge vs. override:** ao aceitar `style` via props num wrapper, usar array (`style={[default, style]}`) para mesclar; um `style={{...}}` fixo depois de um spread sempre sobrescreve, nunca mescla.
-- **`Record<K, V>` para variantes:** força um valor por chave do union, sem faltar nem sobrar — exaustividade garantida em tempo de compilação, sem precisar do truque `never` que um `switch` exigiria.
-- **`satisfies` (TS 4.9+):** valida um objeto contra um tipo (mesma exaustividade de uma anotação `: Tipo`) sem alargar o tipo literal inferido de cada valor.
-- **Densidade de tela (`@2x`/`@3x`, `srcset`, drawable buckets):** convenção de nomear/organizar múltiplas resoluções do mesmo asset, mantendo o tamanho lógico fixo — a plataforma escolhe o arquivo, não o desenvolvedor.
-- **Regra das 2-3 ocorrências:** extrair um componente/função quando o mesmo bloco aparece pela segunda ou terceira vez, não na primeira — evita abstrair em cima de uma amostra de tamanho 1.
-- **`asChild` (padrão headless):** um componente de comportamento (navegação, foco, ARIA) que clona suas props/eventos no filho único fornecido, em vez de renderizar seu próprio wrapper — popularizado pelo Radix UI, também usado pelo expo-router.
-- **`navigate`/`push` vs. `back`/`pop`:** duas intenções de navegação diferentes em qualquer sistema de rotas (não só expo-router) — ir pra um destino novo (empilha, pode perder estado) vs. retornar de onde veio (desempilha, preserva estado e usa a animação inversa).
-- **Inversão de Controle via callback (`onSuccess`/`onError`):** uma função/hook reutilizável aceita um callback pra um efeito colateral que não é da sua responsabilidade (navegação, analytics), em vez de importar o módulo que causa esse efeito — quem chama decide o comportamento concreto.
-- **Schema-first:** escrever a validação (Zod/Yup/etc.) uma vez e derivar o tipo TS dela (`z.infer`), em vez de manter tipo e validação como duas fontes de verdade separadas.
-- **Validação cruzada:** regra que depende de mais de um campo (ex.: confirmação de senha) só pode viver no nível do objeto/form inteiro, nunca num validador de campo isolado — e precisa apontar explicitamente (`path`) pra qual campo o erro pertence.
-- **Resolver (RHF):** contrato abstrato que traduz o resultado de uma lib de schema qualquer pro formato que a lib de formulário entende — um adapter, no mesmo sentido de Ports & Adapters.
-- **Tipagem contextual:** TS só infere o tipo de um parâmetro a partir de "pra onde a função vai" quando ela é uma expressão no próprio ponto de uso (arrow function inline, variável já tipada) — uma `function` nomeada declarada à parte não ganha esse benefício.
-- **Semelhança coincidental vs. mesmo conceito:** dois tipos que hoje têm os mesmos campos, mas respondem perguntas diferentes (o que o formulário valida vs. o que a operação de domínio precisa), não deveriam compartilhar um único tipo — reusar um pelo outro acopla duas camadas que deveriam evoluir independente.
-- **Class field com arrow function:** `prop = (...) => {}` em vez de um método normal — fixa o `this` da instância no momento da criação, útil quando o método pode ser destruturado/passado solto; sem efeito quando o método nunca usa `this`.
-- **Interface "implementada" só de tipo, sem corpo:** uma `class` aceita `campo: Tipo;` sem atribuição, o que parece progresso mas não é chamável em runtime — um objeto literal implementando a mesma interface não permite esse descuido, porque falta a propriedade de verdade.
-- **Custom URL scheme vs. Universal/App Link:** um `meuapp://` pode ser registrado por qualquer app no device (sem dono verificado); Universal Link (iOS)/App Link (Android) é vinculado a um domínio HTTPS que só o dono comprovado pode reivindicar — o segundo é seguro pra dado sensível, o primeiro não.
-- **Open redirect:** falha em que um serviço redireciona pra qualquer URL recebida como parâmetro, sem validar contra uma lista de destinos permitidos — em fluxos de auth, permite phishing usando um domínio confiável como isca.
-- **PKCE (Proof of Key Code Exchange):** padrão de OAuth2/OIDC onde o link/redirect carrega só um código de uso único, trocável pelo token real apenas por quem gerou um segredo local (`code_verifier`) — o token nunca trafega, sozinho, por um canal não confiável (e-mail, URL, log).
-- **Fronteira de tipo com lib externa:** um tipo do seu projeto só protege código que você escreveu; quando uma lib de terceiros decide quando/como chamar sua função (render prop, callback, evento), ela pode entregar menos do que o tipo promete — a defesa fica em runtime (default, guard), não na assinatura.
-- **`@ts-ignore` vs. narrowing:** `@ts-ignore` faz o compilador parar de reclamar sem resolver a causa (ex.: `error: unknown`); a forma correta é estreitar o tipo antes de usar (`error instanceof Error`).
+- **Hidratação de sessão:** carregar a sessão persistida antes de decidir se o usuário está logado — sem uma flag de "pronto", a UI decide cedo demais.
+- **Ports & Adapters:** interface que o app conhece + implementação concreta que ele não conhece, trocada num único ponto — Repository, Storage, Feedback e o `resolver` do RHF são a mesma receita.
+- **Composition Root:** único ponto do app que escolhe as implementações concretas e as injeta via Context.
+- **`Record<K, V>` para variantes:** garante uma entrada por chave do union em tempo de compilação — a base de qualquer lib de variantes de UI (`cva`, shadcn/ui).
+- **`satisfies` (TS 4.9+):** mesma exaustividade de uma anotação de tipo, sem alargar o tipo literal inferido.
+- **Densidade de tela (`@2x`/`@3x`):** tamanho lógico fixo, várias resoluções de arquivo, a plataforma escolhe qual carregar.
+- **Regra das 2-3 ocorrências:** extrair um componente/função na segunda ou terceira repetição observada, nunca na primeira.
+- **`asChild`:** componente de comportamento que clona props/eventos no filho fornecido, sem renderizar wrapper próprio (Radix, React Aria, expo-router).
+- **Inversão de Controle via callback:** um hook/serviço reutilizável aceita `onSuccess`/`onError` em vez de importar o módulo que causa o efeito colateral — quem chama decide.
+- **Schema-first:** escrever a validação uma vez, derivar o tipo dela (`z.infer`) — nunca duas fontes de verdade separadas.
+- **Fronteira de tipo com lib externa:** um tipo só protege até onde o próprio projeto controla a chamada — do outro lado de uma callback de terceiro, a garantia não se sustenta sozinha.
+- **Custom URL scheme vs. Universal/App Link:** scheme não tem dono verificado (qualquer app registra); Universal/App Link é vinculado a um domínio HTTPS comprovado.
+- **Open redirect:** redirecionar pra qualquer URL recebida como parâmetro sem validar contra uma allowlist — abre porta pra phishing usando um domínio confiável como isca.
+- **PKCE:** o link carrega um código de troca de uso único, não o token final — o token só existe depois de uma troca que exige um segredo local.
