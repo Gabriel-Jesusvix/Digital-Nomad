@@ -94,7 +94,36 @@ Isso é o suficiente pra um projeto **nascendo com testes**. Um projeto que já 
 
 ## 3. React Native Testing Library: testar como o usuário usa
 
-*(a preencher — `render`, queries por texto/role/testID, por que evitar `testID` como primeira escolha.)*
+```tsx
+describe('Component', () => {
+  test("should display the label when is not loading", () => {
+    render(<Component label="hello world" loading={false} />);
+    expect(screen.getByText('hello world')).toBeOnTheScreen();
+  });
+
+  it("should display the loading message when is loading", () => {
+    render(<Component label="hello world" loading={true} />);
+    expect(screen.getByText(/Is loading..../i)).toBeOnTheScreen();
+  });
+});
+```
+
+**`describe`/`test`/`it`:** `describe` só agrupa testes relacionados (aparecem juntos no relatório, podem compartilhar `beforeEach`/`afterEach`). `test` e `it` são **o mesmo método, dois nomes** — `it` existe pra ler como frase ("it should display the label..."), sem nenhuma diferença de comportamento. Este arquivo usa os dois no mesmo `describe` (`test` no primeiro, `it` no segundo) — funciona, mas o ideal é escolher um estilo por projeto e manter consistente; misturar é ruído, não um erro.
+
+**`screen`, o seletor novo desta aula:** antes dele, toda query vinha do retorno de `render()` — `const { getByText } = render(<Component />)`. `screen` (o mesmo conceito do Testing Library na web) é um objeto global que já aponta pra árvore renderizada **mais recente** no teste — `render()` a registra por baixo dos panos, e daí em diante qualquer `screen.getByText(...)` consulta ela, sem precisar carregar o retorno de `render` pra cada assert. Menos boilerplate quando há várias verificações no mesmo teste.
+
+### `getByText` com string exata vs. regex — o ponto central da aula
+
+`screen.getByText('hello world')` exige **match exato**, char a char, sensível a maiúsculas. `screen.getByText(/Is loading..../i)` troca isso por um padrão: o `i` no fim ignora maiúsculas/minúsculas, e o `RegExp` no lugar da string é uma forma de matcher que o Testing Library aceita nativamente (`string | RegExp | function`, mesma API na versão web).
+
+**Por que regex faz sentido aqui, e não é só estilo:** o texto real é um estado ("está carregando"), não um valor de negócio que precisa bater exato. Se amanhã o texto virar `"Carregando..."` ou ganhar um espaço a mais, um `getByText('Is loading....')` exato quebra por um motivo que não tem nada a ver com o comportamento testado (o app continua carregando corretamente). Testar com um padrão mais solto — idealmente algo como `/is loading/i`, sem tentar casar a pontuação exata — deixa o teste preso à **substância** (existe uma indicação de loading) e não à redação exata da copy.
+
+> **Pegadinha real neste regex, vale saber pra não repetir:** `/Is loading..../i` tem quatro pontos **sem escapar** — em regex, `.` (sem `\`) significa "qualquer caractere", não "ponto literal". Isso faz o padrão combinar com `"Is loading" + 4 caracteres quaisquer`, não especificamente `"Is loading...."`. Funciona aqui por coincidência (o texto real termina com pontos, que também satisfazem "qualquer caractere"), mas o mesmo regex casaria igual com `"Is loadingXXXX"`. Regra prática: se a intenção é bater um texto que contém `.` de verdade, escape (`\.`); se a intenção é só "contém a palavra loading, não importa a pontuação", um regex mais curto (`/loading/i`) é mais honesto sobre o que está sendo testado.
+
+**Detalhes menores:**
+- `toBeOnTheScreen()` não é um matcher nativo do Jest — vem do `@testing-library/react-native` (via `expect.extend`), e é mais específico que `toBeTruthy()`: confirma que o elemento existe **e** faz parte da árvore atualmente montada.
+- O diff desta aula deixou duas linhas comentadas (`// const element = ...`) logo acima da versão final — sobra de iteração que valeria remover antes de commitar.
+- `fireEvent`/`userEvent` já foram importados neste arquivo mas ainda não usados em nenhum teste — preparação visível pras aulas 4 e 5.
 
 ## 4. Interação: `fireEvent` vs. `userEvent`, e fake timers
 
@@ -140,7 +169,8 @@ Isso é o suficiente pra um projeto **nascendo com testes**. Um projeto que já 
 |---|---|---|
 | 1 | Pirâmide de testes, filosofia RNTL, por que a arquitetura anterior importa | §1 |
 | 2 | Setup do Jest com Expo, resiliência de versão | §2 |
-| 3-4 | Primeiro teste com RNTL, `fireEvent`, queries | §3, §4 |
+| 3 | `describe`/`test`/`it`, `screen`, `getByText` (string vs. regex) | §3 |
+| 4 | `fireEvent`, mais queries | §4 |
 | 5 | `userEvent`, fake timers | §4 |
 | 6 | Render customizado | §5 |
 | 7 | Teste de hook, Jest mocks | §6 |
@@ -159,3 +189,5 @@ Isso é o suficiente pra um projeto **nascendo com testes**. Um projeto que já 
 - **Repository fake em teste:** a mesma peça de Ports & Adapters usada em produção (in-memory) reaproveitada como test double — não é uma ferramenta de teste especial, é o mesmo adapter.
 - **`jest-expo` preso à versão do SDK:** o preset mocka a parte nativa de uma versão específica do Expo SDK — instalar via `expo install`, nunca via `npm`/`yarn` direto, garante a versão compatível.
 - **`transformIgnorePatterns`:** lista de exceções ao "Jest não transpila `node_modules`" — necessário quando uma lib de terceiros publica código não transpilado (ESM/JSX cru) e não está coberta pelo preset.
+- **`screen`:** objeto global do Testing Library que aponta pra árvore renderizada mais recente no teste — evita destruturar o retorno de `render()` em cada assert.
+- **Matcher por regex vs. string exata:** string em `getByText` exige match exato; regex permite casar por substância (case-insensitive, parcial) — mais resiliente a mudanças de copy que não afetam o comportamento testado. Cuidado com `.` não escapado (casa qualquer caractere, não um ponto literal).

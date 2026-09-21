@@ -1,5 +1,11 @@
 import { useState } from "react";
 import { Text, View, Pressable } from "react-native";
+import {
+  fireEvent,
+  render,
+  screen,
+  userEvent,
+} from "@testing-library/react-native";
 
 function Component({ label, loading }: { label: string; loading: boolean }) {
   const [count, setCount] = useState(0);
@@ -21,3 +27,21 @@ function Component({ label, loading }: { label: string; loading: boolean }) {
     </View>
   );
 }
+
+describe('Component', () => {
+  test("should display the label when is not loading", () => {
+    render(<Component label="hello world" loading={false} />);
+
+    const element = screen.getByText('hello world');
+
+    expect(element).toBeOnTheScreen();
+  })
+  it("should display the loading message when is loading", () => {
+    render(<Component label="hello world" loading={true} />);
+
+    // const element = screen.getByText(/Is loading..../i);
+
+    // expect(element).toBeOnTheScreen();
+    expect(screen.getByText(/Is loading..../i)).toBeOnTheScreen();
+  })
+})
