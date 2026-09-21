@@ -44,4 +44,10 @@ describe('Component', () => {
     // expect(element).toBeOnTheScreen();
     expect(screen.getByText(/Is loading..../i)).toBeOnTheScreen();
   })
+  it("should display the correct count number", () => {
+    render(<Component label="hello world" loading={false} />);
+    expect(screen.getByText(/Pressed:0/)).toBeOnTheScreen();
+    fireEvent.press(screen.getByTestId('label-button'))
+    expect(screen.getByText(/Pressed:1/)).toBeOnTheScreen();
+  })
 })

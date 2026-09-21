@@ -127,7 +127,36 @@ describe('Component', () => {
 
 ## 4. Interação: `fireEvent` vs. `userEvent`, e fake timers
 
-*(a preencher — diferença entre disparar um evento sintético (`fireEvent`) e simular a sequência real de eventos de um usuário (`userEvent`); por que `debounce`/temporizadores exigem fake timers em teste.)*
+```tsx
+it("should display the correct count number", () => {
+  render(<Component label="hello world" loading={false} />);
+  expect(screen.getByText(/Pressed:0/)).toBeOnTheScreen();      // Arrange + assert do estado inicial
+  fireEvent.press(screen.getByTestId('label-button'));          // Act
+  expect(screen.getByText(/Pressed:1/)).toBeOnTheScreen();      // Assert do estado final
+});
+```
+
+**Arrange → Act → Assert, com assert dos dois lados da mudança:** checar o estado antes *e* depois da interação (não só depois) é o que garante que o teste está testando a transição, não só um valor final que poderia já estar ali por outro motivo. "Colocar mais de um `expect`" não é redundância — é o que prova que o clique *causou* a mudança de `Pressed:0` pra `Pressed:1`, e não que o componente já nasceu em `1`.
+
+**O que `fireEvent` faz por baixo dos panos, e por que isso importa:** `fireEvent.press(el)` chama a prop `onPress` do elemento **diretamente** — não simula a sequência real de toque que um dedo produziria (`onPressIn` → delay → `onPressOut` → `onPress`). Pra testar contagem de clique isso é suficiente; pra qualquer lógica amarrada aos eventos intermediários (feedback visual de "pressionando", debounce de toques rápidos, gestos), `fireEvent` não é fiel o bastante — é exatamente a lacuna que `userEvent` (aula 5) fecha, simulando a sequência completa em vez de ir direto ao handler final.
+
+### Fazer o teste falhar de propósito — o exercício mais importante desta aula
+
+Antes de confiar num teste que passa, vale **quebrá-lo de propósito** uma vez: trocar `Pressed:1` por `Pressed:2` no assert, ou comentar o `setCount` no componente, rodar o teste, e confirmar que ele **falha** com uma mensagem que faz sentido. Se um teste "passa" mesmo com a lógica errada, ele é um falso positivo — pior que não ter teste nenhum, porque dá a sensação de cobertura sem entregar nenhuma. Isso não é uma etapa opcional de aprendizado, é uma disciplina pra manter no dia a dia: todo teste novo deveria, em algum momento antes de ser commitado, ser visto falhando pelo menos uma vez.
+
+### `testID`: por que apareceu justo aqui, e por que é o último recurso
+
+```tsx
+<Pressable testID="label-button" onPress={() => setCount((p) => p + 1)}>
+  <Text>{label}</Text>
+</Pressable>
+```
+
+`getByTestId` só entrou em cena quando o teste precisou **disparar** uma interação, não só **ler** um texto. `fireEvent` dispara o handler do elemento exato que você passa a ele — e o `onPress` está no `Pressable`, não no `Text` que `getByText('hello world')` retorna. Sem `testID`, não haveria como pegar uma referência ao `Pressable` diretamente por texto ou role, porque ele não expõe nenhum dos dois (não tem `accessibilityRole`, o texto pertence ao filho).
+
+Na ordem de prioridade do Testing Library (a mesma na versão web e na RNTL — por role, depois label, depois texto, ... `testID` por último), `testID` é o recurso de quando nenhuma consulta "como o usuário enxerga" resolve o elemento. Aqui resolveria diferente: dar `accessibilityRole="button"` ao `Pressable` e trocar por `getByRole('button', { name: 'hello world' })` — mais alinhado ao princípio da aula 1 ("testar como o usuário usa"), e sem precisar de nenhum atributo que só existe pro teste.
+
+**Nota sobre o regex desta aula:** `/Pressed:0/` e `/Pressed:1/`, sem `i` e sem nenhum caractere especial pra escapar — diferente do regex da aula 3, aqui não tem pegadinha, é regex por hábito/consistência com o teste anterior, não por necessidade (uma string exata `'Pressed:0'` funcionaria igual, já que o texto renderizado é exatamente isso). Vale reconhecer a diferença: às vezes regex resolve um problema real (aula 3), às vezes é só estilo — e tudo bem, contanto que se saiba qual dos dois casos é.
 
 ## 5. Render customizado: injetando os mesmos Providers da produção
 
@@ -170,7 +199,7 @@ describe('Component', () => {
 | 1 | Pirâmide de testes, filosofia RNTL, por que a arquitetura anterior importa | §1 |
 | 2 | Setup do Jest com Expo, resiliência de versão | §2 |
 | 3 | `describe`/`test`/`it`, `screen`, `getByText` (string vs. regex) | §3 |
-| 4 | `fireEvent`, mais queries | §4 |
+| 4 | `fireEvent`, `testID`, Arrange-Act-Assert, teste falhando de propósito | §4 |
 | 5 | `userEvent`, fake timers | §4 |
 | 6 | Render customizado | §5 |
 | 7 | Teste de hook, Jest mocks | §6 |
@@ -191,3 +220,7 @@ describe('Component', () => {
 - **`transformIgnorePatterns`:** lista de exceções ao "Jest não transpila `node_modules`" — necessário quando uma lib de terceiros publica código não transpilado (ESM/JSX cru) e não está coberta pelo preset.
 - **`screen`:** objeto global do Testing Library que aponta pra árvore renderizada mais recente no teste — evita destruturar o retorno de `render()` em cada assert.
 - **Matcher por regex vs. string exata:** string em `getByText` exige match exato; regex permite casar por substância (case-insensitive, parcial) — mais resiliente a mudanças de copy que não afetam o comportamento testado. Cuidado com `.` não escapado (casa qualquer caractere, não um ponto literal).
+- **Arrange-Act-Assert (AAA):** estrutura padrão de um teste de interação — prepara o estado, executa a ação, verifica o resultado. Assert antes *e* depois da ação confirma que a ação causou a mudança, não só que o valor final está certo.
+- **`fireEvent` vs. simulação real de gesto:** `fireEvent` chama a prop de evento (`onPress`) direto no elemento — não passa pelos eventos intermediários que um toque real dispara. Suficiente pra lógica simples de clique; insuficiente pra comportamento amarrado a `onPressIn`/`onPressOut`/gestos.
+- **Teste falhando de propósito:** quebrar a asserção ou a implementação de propósito, rodar o teste, confirmar que ele falha — a única forma de saber que um teste que passa não é um falso positivo.
+- **`testID` como último recurso:** na ordem de prioridade do Testing Library, `testID` vem depois de role/label/texto — só se justifica quando o elemento não expõe nenhuma forma de ser identificado "como o usuário enxerga".
