@@ -235,7 +235,38 @@ Os testes de `Button`/`Text` ficam em `src/ui/components/__test__/` — **singul
 
 ## 6. Testando hooks e mocks com Jest
 
-*(a preencher — `renderHook`, `jest.fn()`/`jest.mock()`, quando mockar um módulo inteiro vs. trocar só o adapter via Provider.)*
+```ts
+jest.mock("@/src/infra/repositories/RepositoryProvider", () => ({
+  useRepository: () => ({ auth: { signIn: mockSignIn } }),
+}));
+
+const { result } = renderHook(() => useAuthSignIn());
+await act(async () => {
+  await result.current.mutate({ email: "...", password: "..." });
+});
+expect(mockSignIn).toHaveBeenCalledWith("...", "...");
+```
+
+**`renderHook`:** testa um hook isolado, sem precisar de um componente visual em volta — monta o hook, expõe o retorno em `result.current`, e cada chamada que muda estado precisa ficar dentro de `act(...)` (é o que faz o React "processar" a atualização antes do próximo assert rodar).
+
+**`jest.mock(caminho, fabrica)` troca o módulo inteiro que o hook importa**, não só uma função dele. Diferente do render customizado (seção 5), que injeta uma implementação via Provider igual à produção faria, aqui o teste intercepta a própria importação — útil quando o hook não recebe a dependência por parâmetro/Context de forma fácil de trocar em teste, ou quando o objetivo é isolar 100% de qualquer efeito colateral real (chamada de rede, storage) sem precisar montar Provider nenhum.
+
+### Um bug real, e o porquê exato por trás dele
+
+Erro reportado:
+```
+Cannot find module '@src/infra/repositories/RepositoryProvider' from '...useAuthSignIn.test.ts'
+```
+
+Causa: `@src/...` (sem barra depois do `@`) em vez de `@/src/...` — o alias configurado no projeto é `"@/*": ["./*"]` (`tsconfig.json`), e todo o resto do código usa exatamente esse prefixo com a barra.
+
+**O porquê, não só o "troque a string":** este projeto não tem `moduleNameMapper` no config do Jest, e mesmo assim `@/src/...` resolve normalmente em outros arquivos de teste — porque `babel-preset-expo` lê os `paths` do `tsconfig.json` e faz a troca de prefixo **em tempo de transformação**, antes do resolvedor de módulos do Jest sequer ver o caminho. Essa substituição é literal: reconhece o prefixo `@/` exatamente como está escrito, e troca por `./`. `@src/...` não bate com esse prefixo — passa direto, sem ser tocado, e cai no resolvedor padrão do Node, que tenta achar um pacote chamado `@src` dentro de `node_modules`. Não existe, daí o "Cannot find module". Não é bug de configuração do Jest — é um typo que escapa da regra de substituição por um caractere.
+
+**A parte que vale mais a lição:** corrigir esse `jest.mock` sozinho **não** era o bug inteiro. O mesmo arquivo tinha mais dois caminhos errados nos outros dois `jest.mock`:
+- `@/src/infra/feedbackService/FeedbackProvider` → o arquivo real está em `@/src/infra/services/feedback/FeedbackProvider` (pasta errada).
+- `../../AuthContext` → de dentro de `src/domain/Auth/__test__/`, `AuthContext.tsx` está só **uma** pasta acima, não duas (`../AuthContext`).
+
+O motivo de só o primeiro erro aparecer: as três chamadas de `jest.mock` são processadas (hoisted) antes de qualquer teste rodar, em ordem — a primeira que falha interrompe o arquivo inteiro ali, e as outras duas nunca chegam a ser avaliadas. **Regra prática pra depurar `jest.mock` com vários caminhos:** corrigir um erro de módulo não garante que o arquivo está livre de outros iguais — rode de novo depois de cada correção, não assuma que "resolveu o erro" significa "resolveu o arquivo".
 
 ## 7. Cobertura de código: o que o número não diz
 
@@ -274,7 +305,7 @@ Os testes de `Button`/`Text` ficam em `src/ui/components/__test__/` — **singul
 | 5 | `userEvent`, fake timers, nome de teste enganoso | §4 |
 | 5 | `userEvent`, fake timers | §4 |
 | 6 | Render customizado (`wrapper`, `Omit`), `jest.fn()`, convenção de pasta de teste | §5 |
-| 7 | Teste de hook, Jest mocks | §6 |
+| 7 | `renderHook`, `jest.mock`, resolução de alias sob o capô | §6 |
 | 8 | Code coverage | §7 |
 | 9-10 | `SignUpForm`, estilo, cenários de erro | §8 |
 | 11 | Integração com Expo Router | §9 |
@@ -304,3 +335,6 @@ Os testes de `Button`/`Text` ficam em `src/ui/components/__test__/` — **singul
 - **`Omit<LibType, "campo">`:** técnica de TS pra reaproveitar o tipo de opções de uma lib de terceiro, removendo só o campo que o próprio projeto já decidiu por você — trava a decisão em nível de tipo, não só de convenção.
 - **`jest.fn()` (spy):** função que registra suas próprias chamadas, permitindo perguntar depois se/quantas vezes/com o quê foi chamada — outro tipo de asserção, complementar a verificar o que apareceu na tela.
 - **Teste de fiação vs. teste de regra de negócio:** um teste pode provar que uma prop chega até o componente nativo certo (fiação) sem provar nenhuma lógica própria do componente — as duas confianças são legítimas, mas não intercambiáveis.
+- **`renderHook`:** monta um hook sem componente visual em volta, expondo o retorno em `result.current`; mudanças de estado dentro dele precisam de `act(...)`.
+- **`jest.mock(caminho, fábrica)`:** substitui o módulo inteiro num caminho de import — precisa bater exatamente com a resolução real (mesmos aliases, mesma profundidade relativa), senão falha com "Cannot find module" em vez de silenciosamente não mockar nada.
+- **Alias resolvido por prefixo, não por convenção geral:** `babel-preset-expo` (ou `moduleNameMapper` do Jest, noutros setups) troca um prefixo literal registrado no `tsconfig.json`/config — qualquer caminho que não bata caractere por caractere com esse prefixo cai no resolvedor padrão do Node, tratado como se fosse um pacote de `node_modules`.
