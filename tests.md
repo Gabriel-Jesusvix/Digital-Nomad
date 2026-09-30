@@ -270,7 +270,43 @@ O motivo de só o primeiro erro aparecer: as três chamadas de `jest.mock` são 
 
 ## 7. Cobertura de código: o que o número não diz
 
-*(a preencher — coverage mede linhas executadas, não corretude; 100% de cobertura com asserts fracos ainda esconde bug.)*
+```
+npx jest --coverage
+```
+```
+File                                | % Stmts | % Branch | % Funcs | % Lines
+useAuthSignIn.ts                    |     100 |      100 |     100 |     100
+FeedbackProvider.tsx                |       0 |        0 |       0 |       0
+IFeedbackService.ts                 |       0 |        0 |       0 |       0
+adapters/Alert/AlertFeedback.tsx    |       0 |      100 |       0 |       0
+adapters/Toast/ToastFeedback.ts     |       0 |      100 |       0 |       0
+```
+
+`useAuthSignIn.test.ts` passa, com dois cenários (sucesso e erro), e o hook que ele testa direto mostra 100%. Mas o `FeedbackProvider` e todos os adapters de `IFeedbackService` aparecem em **0%** — não porque ninguém pensou neles, mas porque o teste faz `jest.mock("@/src/infra/services/feedback/FeedbackProvider", ...)`: o módulo real nunca roda, só o mock roda. Coverage conta **linha executada**, não "funcionalidade coberta" — um módulo inteiramente substituído por mock nunca vai aparecer coberto, por mais que o comportamento dele esteja sendo simulado corretamente pelo mock.
+
+### Dois motivos pra um arquivo aparecer em 0%, e são coisas diferentes
+
+1. **Ninguém escreveu teste pra ele ainda** (`useAuthSignOut.ts`, `useAuthSignUp.ts`, `useAuthSendResetPasswordEmail.ts` — 0% real, sem mock envolvido). Leitura direta: falta teste.
+2. **Foi mockado por um teste que testa outra coisa** (`FeedbackProvider`, `AlertFeedback`, `ToastFeedback` — 0% porque `useAuthSignIn.test.ts` os substitui de propósito). Leitura errada: "falta teste de feedback". Leitura certa: falta um teste **dedicado** aos adapters de feedback (ex.: confirmar que `AlertFeedback.send` chama `Alert.alert` com os argumentos certos) — coisa que o teste de `useAuthSignIn` nunca teve a intenção de cobrir, porque isolar a unidade é o objetivo dele.
+
+**A lição central, agnóstica de qualquer stack:** o número de coverage é um mapa de "o que rodou durante os testes", não de "o que está correto" nem de "o que está integrado de ponta a ponta". Dá pra ter 100% de cobertura numa função com um `expect(true).toBe(true)` solto, e 0% numa peça que já está perfeitamente exercitada por outro conjunto de testes (integração, E2E) que o relatório de coverage daquele arquivo isolado não enxerga. Coverage serve pra **achar buracos óbvios** (arquivo sem teste nenhum) — não serve pra provar corretude, e um número alto não substitui ler quais asserções de fato existem.
+
+### `beforeEach(() => jest.clearAllMocks())` — por que os mocks vazam entre testes sem isso
+
+```ts
+const mockSendFeedback = jest.fn(); // criado uma vez, no escopo do arquivo
+
+beforeEach(() => {
+  jest.clearAllMocks(); // zera o histórico de chamadas antes de CADA teste
+});
+```
+
+`mockSignIn`/`mockSendFeedback`/`mockSaveAuthUser` são criados **uma vez**, fora de qualquer `it`/`test` — o mesmo `jest.fn()` é reaproveitado no arquivo inteiro. Sem limpar entre testes, o histórico de chamadas (`toHaveBeenCalledWith`, contagem de chamadas) do primeiro teste continua ali quando o segundo roda, e um `toHaveBeenCalledTimes(1)` no segundo teste veria 2 chamadas (uma de cada teste) — falha (ou, pior, passa por engano se a asserção não for específica o bastante). `beforeEach` (roda antes de **cada** teste, diferente do `beforeAll` da aula 5, que roda uma vez só) é o que garante isolamento: cada teste começa com um mock "zerado", sem carregar histórico do teste anterior.
+
+**Três primos que fazem coisas parecidas, mas não iguais — vale saber qual usar:**
+- `clearAllMocks()`: zera só o histórico de chamadas (`mock.calls`) — mantém qualquer `mockResolvedValueOnce`/`mockImplementation` já configurado **fora** do próprio teste. É o certo aqui, porque os retornos (`mockResolvedValueOnce`, `mockRejectedValueOnce`) são configurados dentro de cada `it`, não precisam sobreviver entre testes.
+- `resetAllMocks()`: faz o que `clearAllMocks` faz e **também** zera a implementação de volta a um mock vazio — quebraria um fluxo que dependesse de uma implementação padrão configurada uma vez fora dos testes individuais.
+- `restoreAllMocks()`: só importa pra mocks criados com `jest.spyOn` — devolve a implementação **original** (não mockada) da função espionada.
 
 ## 8. Teste de componente real: formulário, estilo e erro
 
@@ -306,7 +342,7 @@ O motivo de só o primeiro erro aparecer: as três chamadas de `jest.mock` são 
 | 5 | `userEvent`, fake timers | §4 |
 | 6 | Render customizado (`wrapper`, `Omit`), `jest.fn()`, convenção de pasta de teste | §5 |
 | 7 | `renderHook`, `jest.mock`, resolução de alias sob o capô | §6 |
-| 8 | Code coverage | §7 |
+| 8 | `jest --coverage`, 0% mockado vs. 0% sem teste, `beforeEach`/`clearAllMocks` | §7 |
 | 9-10 | `SignUpForm`, estilo, cenários de erro | §8 |
 | 11 | Integração com Expo Router | §9 |
 | 12-14 | Integração: sign-in/out, Home, City Details | §9 |
@@ -338,3 +374,5 @@ O motivo de só o primeiro erro aparecer: as três chamadas de `jest.mock` são 
 - **`renderHook`:** monta um hook sem componente visual em volta, expondo o retorno em `result.current`; mudanças de estado dentro dele precisam de `act(...)`.
 - **`jest.mock(caminho, fábrica)`:** substitui o módulo inteiro num caminho de import — precisa bater exatamente com a resolução real (mesmos aliases, mesma profundidade relativa), senão falha com "Cannot find module" em vez de silenciosamente não mockar nada.
 - **Alias resolvido por prefixo, não por convenção geral:** `babel-preset-expo` (ou `moduleNameMapper` do Jest, noutros setups) troca um prefixo literal registrado no `tsconfig.json`/config — qualquer caminho que não bata caractere por caractere com esse prefixo cai no resolvedor padrão do Node, tratado como se fosse um pacote de `node_modules`.
+- **Coverage mede execução, não corretude:** a % de cobertura conta linhas que rodaram durante os testes — um módulo inteiramente mockado sempre aparece em 0%, mesmo que o comportamento dele esteja bem simulado; um teste fraco pode gerar 100% sem provar nada.
+- **`clearAllMocks` vs. `resetAllMocks` vs. `restoreAllMocks`:** o primeiro só zera histórico de chamadas; o segundo também apaga implementações configuradas (`mockImplementation`/`mockReturnValue`); o terceiro só se aplica a `jest.spyOn`, devolvendo a função original.
