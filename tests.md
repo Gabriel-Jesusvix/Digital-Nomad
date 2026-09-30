@@ -192,7 +192,46 @@ describe('Component', () => {
 
 ## 5. Render customizado: injetando os mesmos Providers da produção
 
-*(a preencher — um `render` de teste que já embrulha `RepositoryProvider`/`FeedbackProvider`/`AuthProvider`/`StorageProvider`, pra não repetir isso em todo arquivo de teste.)*
+**Padrão oficial da própria Testing Library (web e RN têm a mesma receita na doc), não invenção deste projeto:**
+
+```tsx
+// src/test-utils/renderComponent.tsx
+const AllTheProviders = ({ children }: React.PropsWithChildren) => (
+  <ThemeProvider theme={theme}>{children}</ThemeProvider>
+);
+
+export const renderComponent = (
+  component: ReactElement,
+  options?: Omit<RenderOptions, "wrapper">
+) => render(component, { wrapper: AllTheProviders, ...options });
+```
+
+**O mecanismo, agnóstico de qualquer projeto:** todo `render` de Testing Library (web ou RNTL) aceita uma opção `wrapper` — um componente que envolve a UI testada antes de montar. Um render customizado nada mais é do que uma função que **já fixa esse `wrapper`** com todos os Providers que a árvore real usa (tema, i18n, store, autenticação, o que for), pra cada arquivo de teste não precisar reescrever `<ThemeProvider><QueryClientProvider><AuthProvider>...` toda vez que testar um componente que depende de algum desses contextos.
+
+**`AllTheProviders` cresce conforme os testes exigem, não antecipado.** Hoje só tem `ThemeProvider`, porque `Button`/`Text` só dependem de tema. Quando a suíte passar a testar algo que usa `useRepository()`/`useFeedbackService()`/`useAuth()`, os Providers correspondentes entram na mesma função — um único lugar centraliza "quais contextos qualquer componente pode precisar em teste", espelhando o Composition Root de produção (mesma ideia, papel diferente: lá monta o app real, aqui monta o app de teste).
+
+**`Omit<RenderOptions, "wrapper">` — travar de propósito uma opção da lib de terceiro:** em vez de redeclarar as opções de `render` à mão, o tipo reaproveita `RenderOptions` da própria lib e remove só o campo que este projeto já decidiu (`wrapper`) — quem chama `renderComponent` pode passar qualquer outra opção do `render` original, mas não pode sobrescrever os Providers por acidente. É uma técnica de TS reaproveitável em qualquer wrapper de API de terceiro: pegar o tipo da lib, tirar só o que você está assumindo a responsabilidade de decidir.
+
+### `jest.fn()` — testando se algo foi chamado, não o que apareceu na tela
+
+```tsx
+it("should NOT call the onPress function when it is disabled", () => {
+  const onPressFn = jest.fn();
+  renderComponent(<Button title="button title" onPress={onPressFn} disabled />);
+  fireEvent.press(screen.getByText("button title"));
+  expect(onPressFn).not.toHaveBeenCalled();
+});
+```
+
+Diferente de todos os testes anteriores (que verificavam texto/estado renderizado), aqui a asserção é sobre **uma função ter sido chamada ou não** — `jest.fn()` cria uma função "espiã" que registra cada chamada, permitindo perguntar depois "isso rodou?", "quantas vezes?", "com quais argumentos?". É outro estilo de prova, complementar ao de tela: às vezes o que importa não é o que renderizou, é se um callback foi ou não disparado.
+
+**O que esse teste específico prova, e o que ele não prova:** `disabled` chega em `Button` só porque `ButtonProps` estende as props nativas do `TouchableOpacity` por baixo — o componente não tem nenhuma lógica própria de "se desabilitado, não chama". Quem trata isso é o `TouchableOpacity` do React Native, de graça, assim que a prop é repassada adiante. O teste é válido (garante que ninguém quebre esse repasse numa refatoração futura), mas vale reconhecer a diferença: ele testa **fiação** (a prop chega até o componente nativo certo), não uma **regra de negócio própria** — não existe, por exemplo, nenhum feedback visual de "desabilitado" sendo testado aqui (nem implementado ainda). Duas confianças diferentes, ambas legítimas, mas não a mesma coisa.
+
+### Achado real: nome de pasta inconsistente que só não quebra por sorte de regra
+
+Os testes de `Button`/`Text` ficam em `src/ui/components/__test__/` — **singular**. Os testes anteriores ficam em `src/__tests__/` — **plural**. O `testMatch` padrão do Jest tem duas regras independentes: uma exige literalmente uma pasta `__tests__/` (plural); a outra aceita qualquer arquivo terminado em `.test.ts(x)`, em qualquer pasta. Os arquivos em `__test__/` (singular) só são encontrados pela **segunda** regra (o sufixo do nome do arquivo), não pela primeira — funcionam, mas por um caminho diferente do resto do projeto. Não é um bug (nada quebra agora), mas é o tipo de inconsistência que compensa padronizar antes que alguém, um dia, crie um arquivo sem o sufixo `.test.` dentro de `__test__/` esperando que a pasta sozinha baste — e ele simplesmente não vai rodar, silenciosamente.
+
+**Evolução natural pra quem quiser ir além do que este projeto fez:** o padrão mais completo de "custom render" (documentado assim na própria Testing Library) não só define um `render` customizado — também **reexporta tudo** da lib de teste a partir do mesmo módulo (`export * from '@testing-library/react-native'`), pra nenhum arquivo de teste precisar importar de dois lugares (o `render` customizado de um lado, `screen`/`fireEvent` do outro) e correr o risco de alguém importar o `render` cru por engano. Este projeto optou pela versão mais simples (uma função a mais, chamada com outro nome) — funciona igual, só exige mais disciplina de quem escreve o teste pra lembrar de usar `renderComponent` em vez do `render` direto quando o componente precisa de Provider.
 
 ## 6. Testando hooks e mocks com Jest
 
@@ -234,7 +273,7 @@ describe('Component', () => {
 | 4 | `fireEvent`, `testID`, Arrange-Act-Assert, teste falhando de propósito | §4 |
 | 5 | `userEvent`, fake timers, nome de teste enganoso | §4 |
 | 5 | `userEvent`, fake timers | §4 |
-| 6 | Render customizado | §5 |
+| 6 | Render customizado (`wrapper`, `Omit`), `jest.fn()`, convenção de pasta de teste | §5 |
 | 7 | Teste de hook, Jest mocks | §6 |
 | 8 | Code coverage | §7 |
 | 9-10 | `SignUpForm`, estilo, cenários de erro | §8 |
@@ -261,3 +300,7 @@ describe('Component', () => {
 - **Elemento host/nativo:** o nó real (`View`, `Text`, `Pressable`, `TextInput`) no fundo da árvore renderizada, depois de qualquer componente customizado ser "desenrolado" — é sobre isso que `userEvent` de fato opera.
 - **Escopo de `beforeAll`/`afterAll` vs. `beforeEach`/`afterEach`:** o primeiro par roda uma vez pro arquivo/describe inteiro; o segundo, a cada teste. Fake timers ligados em `beforeAll` valem pra todos os testes do bloco, não só pro que precisa deles.
 - **Nome de teste enganoso:** uma descrição que não corresponde ao que o corpo do teste verifica — não é falso positivo (o teste continua correto), mas desperdiça o tempo de quem lê a falha e procura o bug no lugar errado.
+- **Render customizado (`wrapper`):** função que embrulha o `render` da Testing Library fixando todos os Providers da árvore real, pra nenhum arquivo de teste repetir esse boilerplate — o mesmo papel do Composition Root de produção, só que pro ambiente de teste.
+- **`Omit<LibType, "campo">`:** técnica de TS pra reaproveitar o tipo de opções de uma lib de terceiro, removendo só o campo que o próprio projeto já decidiu por você — trava a decisão em nível de tipo, não só de convenção.
+- **`jest.fn()` (spy):** função que registra suas próprias chamadas, permitindo perguntar depois se/quantas vezes/com o quê foi chamada — outro tipo de asserção, complementar a verificar o que apareceu na tela.
+- **Teste de fiação vs. teste de regra de negócio:** um teste pode provar que uma prop chega até o componente nativo certo (fiação) sem provar nenhuma lógica própria do componente — as duas confianças são legítimas, mas não intercambiáveis.
