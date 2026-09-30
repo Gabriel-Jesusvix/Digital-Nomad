@@ -158,6 +158,38 @@ Na ordem de prioridade do Testing Library (a mesma na versão web e na RNTL — 
 
 **Nota sobre o regex desta aula:** `/Pressed:0/` e `/Pressed:1/`, sem `i` e sem nenhum caractere especial pra escapar — diferente do regex da aula 3, aqui não tem pegadinha, é regex por hábito/consistência com o teste anterior, não por necessidade (uma string exata `'Pressed:0'` funcionaria igual, já que o texto renderizado é exatamente isso). Vale reconhecer a diferença: às vezes regex resolve um problema real (aula 3), às vezes é só estilo — e tudo bem, contanto que se saiba qual dos dois casos é.
 
+### `userEvent`: a simulação de verdade, e por que ela precisa de fake timers
+
+```tsx
+describe('Component', () => {
+  beforeAll(() => { jest.useFakeTimers(); });
+  afterAll(() => { jest.useRealTimers(); });
+
+  it("should display reset the count when press the reset text 2", async () => {
+    render(<Component label="Hello World" loading={false} />);
+    expect(screen.getByText(/Pressed:0/i)).toBeOnTheScreen();
+
+    const user = userEvent.setup();
+    await user.press(screen.getByText("Hello World"));
+    await user.press(screen.getByText("Hello World"));
+    await user.press(screen.getByText("Hello World"));
+    await user.press(screen.getByText("Hello World"));
+
+    expect(screen.getByText(/Pressed:4/i)).toBeOnTheScreen();
+  });
+});
+```
+
+**Mecanismo:** `userEvent.press` (por isso o `await`) simula a sequência real de eventos nativos que um toque produz — não só chama `onPress`, como `fireEvent`. Essa simulação usa temporizadores internos (delays entre os eventos da sequência), e é exatamente por isso que fake timers aparecem **na mesma aula**: sem `jest.useFakeTimers()`, esses delays seriam tempo real (o teste ficaria mais lento, ou preso esperando timers que nunca disparam no ambiente de teste). Com o relógio fake, o Jest controla/avança esse tempo internamente, e a simulação roda determinística e rápida. `fireEvent` não precisa disso porque não tem delay nenhum — vai direto ao handler.
+
+**`fireEvent` e `userEvent` não competem — coexistem, com propósitos diferentes.** `fireEvent` continua válido pra testar a transição de estado em si (mais simples, síncrono); `userEvent` vale quando a fidelidade da sequência de interação importa. Trocar `fireEvent` por `userEvent` em todo teste não é upgrade automático — é mais setup (`await`, timers) por uma fidelidade que nem todo teste precisa.
+
+**Sobre "só funciona em componentes base" — precisão que vale ajustar:** não é uma lista fechada de nomes (`Pressable`, `Text`); é que `userEvent` opera sobre o **elemento host/nativo** no fundo da árvore renderizada — o nó real que o RN sabe como receber toque. Qualquer componente customizado (um `Button` de design system, por exemplo) funciona normalmente com `userEvent`, contanto que ele acabe renderizando, no fim das contas, um primitivo nativo interativo (`Pressable`/`View`/`TextInput`) — o que é o caso de praticamente todo componente de UI em RN. A API é nova (chegou bem depois do `fireEvent`, espelhando o `@testing-library/user-event` da versão web) e cada método dela é específico do primitivo que simula — `.press()` faz sentido num elemento pressionável, `.type()` só faz sentido num `TextInput`.
+
+**Escopo de `beforeAll`/`afterAll`:** os fake timers aqui valem pro `describe` **inteiro**, não só pro teste que usa `userEvent` — os testes anteriores com `fireEvent` também rodam sob timer fake (inofensivo pra eles, já que não usam timer nenhum). Diferente de `beforeEach`/`afterEach` (que rodariam a cada teste), `beforeAll`/`afterAll` rodam uma vez só, no início/fim de todo o arquivo — se um teste *depois* deste precisasse de timers reais, precisaria de seu próprio `jest.useRealTimers()` explícito, porque o `afterAll` só desfaz no final.
+
+> **Achado real, tipo "falso positivo" ao contrário — nome de teste que não corresponde ao que ele testa:** `it("should display reset the count when press the reset text 2", ...)` descreve um reset ao pressionar o texto "reset" — mas o corpo do teste pressiona o **label** ("Hello World") quatro vezes e verifica a contagem **subindo** até 4, nunca toca no texto de reset. O `" 2"` no final sugere um nome duplicado copiado às pressas. O teste em si está correto (verifica acúmulo real de cliques) — o problema é só a descrição, mas isso importa: quando esse teste falhar um dia, quem ler a mensagem vai procurar bug no reset, não na contagem — o mesmo tipo de dano da aula 4 (confiar em algo que não é verdade), só que na legibilidade do teste, não na lógica dele.
+
 ## 5. Render customizado: injetando os mesmos Providers da produção
 
 *(a preencher — um `render` de teste que já embrulha `RepositoryProvider`/`FeedbackProvider`/`AuthProvider`/`StorageProvider`, pra não repetir isso em todo arquivo de teste.)*
@@ -200,6 +232,7 @@ Na ordem de prioridade do Testing Library (a mesma na versão web e na RNTL — 
 | 2 | Setup do Jest com Expo, resiliência de versão | §2 |
 | 3 | `describe`/`test`/`it`, `screen`, `getByText` (string vs. regex) | §3 |
 | 4 | `fireEvent`, `testID`, Arrange-Act-Assert, teste falhando de propósito | §4 |
+| 5 | `userEvent`, fake timers, nome de teste enganoso | §4 |
 | 5 | `userEvent`, fake timers | §4 |
 | 6 | Render customizado | §5 |
 | 7 | Teste de hook, Jest mocks | §6 |
@@ -224,3 +257,7 @@ Na ordem de prioridade do Testing Library (a mesma na versão web e na RNTL — 
 - **`fireEvent` vs. simulação real de gesto:** `fireEvent` chama a prop de evento (`onPress`) direto no elemento — não passa pelos eventos intermediários que um toque real dispara. Suficiente pra lógica simples de clique; insuficiente pra comportamento amarrado a `onPressIn`/`onPressOut`/gestos.
 - **Teste falhando de propósito:** quebrar a asserção ou a implementação de propósito, rodar o teste, confirmar que ele falha — a única forma de saber que um teste que passa não é um falso positivo.
 - **`testID` como último recurso:** na ordem de prioridade do Testing Library, `testID` vem depois de role/label/texto — só se justifica quando o elemento não expõe nenhuma forma de ser identificado "como o usuário enxerga".
+- **`userEvent` vs. `fireEvent`:** `userEvent` simula a sequência real de eventos de uma interação (assíncrono, precisa de fake timers pros delays internos); `fireEvent` chama o handler direto (síncrono, sem delay). Coexistem — não é upgrade automático trocar um pelo outro.
+- **Elemento host/nativo:** o nó real (`View`, `Text`, `Pressable`, `TextInput`) no fundo da árvore renderizada, depois de qualquer componente customizado ser "desenrolado" — é sobre isso que `userEvent` de fato opera.
+- **Escopo de `beforeAll`/`afterAll` vs. `beforeEach`/`afterEach`:** o primeiro par roda uma vez pro arquivo/describe inteiro; o segundo, a cada teste. Fake timers ligados em `beforeAll` valem pra todos os testes do bloco, não só pro que precisa deles.
+- **Nome de teste enganoso:** uma descrição que não corresponde ao que o corpo do teste verifica — não é falso positivo (o teste continua correto), mas desperdiça o tempo de quem lê a falha e procura o bug no lugar errado.
