@@ -382,9 +382,71 @@ Isso é uma lacuna de **acessibilidade**, não só de teste: um leitor de tela n
 
 ### O que este teste não pega: caminho feliz apenas
 
-Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zod fosse removido do formulário, esse teste continuaria passando — ele não consegue detectar um formulário permissivo demais. Pra ver este teste falhar (o exercício da aula 4) seria preciso quebrar o fluxo de dados, não a validação. É o teste do caminho **inválido** (senhas diferentes → `onSubmit` **não** chamado + mensagem de erro) que de fato fixa a validação — tema da aula 10.
+Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zod fosse removido do formulário, esse teste continuaria passando — ele não consegue detectar um formulário permissivo demais. Pra ver este teste falhar (o exercício da aula 4) seria preciso quebrar o fluxo de dados, não a validação. É o teste do caminho **inválido** (senhas diferentes → `onSubmit` **não** chamado + mensagem de erro) que de fato fixa a validação — feito na aula 10, logo abaixo.
 
 **Detalhe:** `fireEvent.changeText` define o valor final de uma vez, sem simular tecla por tecla (`userEvent.type` faria isso, com a mesma ressalva de `await` e fake timers da aula 5).
+
+### Cenário de erro: o teste negativo e como ele precisa ser montado
+
+```tsx
+describe("should NOT submit form", () => {
+  it("when the password and confirm password do not match", async () => {
+    const onSubmitMock = jest.fn();
+    renderComponent(<SignUpForm onSubmit={onSubmitMock} />);
+
+    // tudo válido, EXCETO o campo sob teste
+    fireEvent.changeText(screen.getByTestId("fullname-input"), "Lucas Garcez");
+    fireEvent.changeText(screen.getByTestId("email-input"), "lucas@coffstack.com");
+    fireEvent.changeText(screen.getByTestId("password-input"), "12345678");
+    fireEvent.changeText(screen.getByTestId("confirm-password-input"), "another-password");
+    fireEvent.press(screen.getByTestId("submit-button"));
+
+    expect(await screen.findByText("senhas devem ser iguais"));
+    expect(screen.getByTestId("confirm-password-input-container"))
+      .toHaveStyle({ borderColor: theme.colors.fbErrorSurface });
+    expect(onSubmitMock).not.toHaveBeenCalled();
+  });
+});
+```
+
+**Vermelho antes do verde (a aula 4 aplicada de verdade):** o roteiro da aula é escrever o teste, rodar, **vê-lo falhar**, e só então fazê-lo passar. A falha inicial vem de um motivo concreto e instrutivo: a primeira versão usava `getByText("senhas devem ser iguais")`, que falhou. Passar a mensagem errada de propósito, depois, confirma que o teste passa "pelo motivo certo".
+
+**`getBy*` é síncrono; `findBy*` espera.** A mensagem de erro não existe logo após o `press` — ela só aparece depois que o resolver do Zod termina (a mesma causa do `waitFor` da aula 9: `handleSubmit` do RHF é assíncrono). `getByText` procura uma vez e lança se não achar; `findByText` re-tenta até aparecer ou estourar o timeout. Regra: `getBy` pro que já está na tela; `findBy` pro que aparece depois de trabalho assíncrono; `queryBy` (retorna `null` em vez de lançar) pra afirmar **ausência**.
+
+**Isolar uma variável por teste negativo não é só arrumação — aqui é obrigatório (verificado).** Rodei o mesmo envio com três preenchimentos diferentes:
+
+| Preenchimento | Mensagens exibidas |
+|---|---|
+| `fullname`/`email` **nunca tocados**, senhas diferentes | `campo obrigatório` ×2 — **sem** "senhas devem ser iguais" |
+| `fullname`/`email` tocados porém inválidos (`"a"`, `"x"`) | `nome muito curto`, `email inválido` **e** `senhas devem ser iguais` |
+| Tudo válido, só `confirmPassword` diferente | só `senhas devem ser iguais` |
+
+O motivo está no Zod (conferi no fonte): o `.refine()` do objeto só roda se o parse interno não "abortou" — campo `undefined` gera erro de tipo (fatal, aborta o objeto), enquanto `min()`/`email()` são erros não fatais (o refine ainda roda). Moral pro teste: `undefined` e "string inválida" seguem caminhos diferentes no Zod, e um teste negativo que deixa campos intocados pode nunca chegar na regra que pretendia exercitar. Preencher todo o resto corretamente é o que garante que a falha tem **uma única causa possível**.
+
+**A ordem do `not.toHaveBeenCalled()` é o que o torna significativo (verificado).** Ele aparece depois do `await findByText`. Se estivesse logo após o `press`, passaria **mesmo com dados válidos** — testei: com tudo válido, `expect(onSubmit).not.toHaveBeenCalled()` imediatamente após o `press` passa, e só depois o `waitFor` mostra que `onSubmit` foi chamado. Como a chamada é assíncrona, o "não foi chamado" daquele instante é vazio. **Regra:** uma asserção de "não aconteceu" em fluxo assíncrono só vale **depois** de aguardar algo que prove que o trabalho assíncrono terminou (aqui, a mensagem de erro aparecer). E vale parear com a mensagem específica — sozinho, "não foi chamado" tem muitas causas possíveis.
+
+**`expect(await screen.findByText(...))` sem matcher funciona, mas por acidente de design.** Confirmei: com um texto inexistente a linha falha — porque `findByText` lança quando não acha, não porque o `expect` verifica algo. Um `expect(x)` sem `.toXxx()` não afirma nada; quem lê assume que afirma. `expect(await screen.findByText(...)).toBeOnTheScreen()` diz a intenção e é o que regras como `jest/valid-expect` exigem (o plugin não está instalado neste projeto — hoje nada acusa isso).
+
+### Teste de estilo: `toHaveStyle`, o que ele pega e o que custa
+
+Só afirmar o **texto** do erro não diz **onde** ele aparece. A aula demonstra: trocar o `path` do `.refine()` de `confirmPassword` para `password` faz a mensagem aparecer no campo errado, e o teste de texto continua verde — só a asserção de estilo no container do `confirmPassword` fica vermelha. Voltar o `path` faz passar.
+
+```tsx
+expect(screen.getByTestId("confirm-password-input-container"))
+  .toHaveStyle({ borderColor: theme.colors.fbErrorSurface });
+```
+
+**O mecanismo:** `toHaveStyle` lê o `style` achatado do elemento e compara as propriedades pedidas. Com Restyle, `borderColor="fbErrorSurface"` (token) é resolvido pra um valor real no `View` por baixo — conferi: o estilo achatado tem `borderColor: "#D32F2F"`, e `not.toHaveStyle({ borderColor: "fbErrorSurface" })` passa (o nome do token não aparece). Usar `theme.colors.fbErrorSurface` na asserção amarra o teste ao **token** do design system. Isso detecta **fiação** (o token de erro está aplicado no elemento certo), mas não detecta um valor errado do próprio token — pra isso a asserção seria tautológica.
+
+**A técnica de `testID` composto, e um bug que ela introduziu (verificado).** O `testID` vai pro `RNTextInput`, mas a borda vive no `Box` que o envolve. Em vez de criar uma prop nova por elemento, o `TextInput` deriva `testID={`${testID}-container`}` a partir da prop que já existia — um padrão pragmático e reaproveitável. Restrição: `getByTestId` lança se houver mais de um elemento com o mesmo id.
+
+O problema: quando quem usa `TextInput` **não** passa `testID` (sign-in e reset-password não passam), o template vira a string literal `"undefined-container"` — renderizei dois `TextInput` sem `testID` e `getAllByTestId("undefined-container")` achou **dois** elementos com o mesmo id, em código de produção. Correção: `testID={testID ? `${testID}-container` : undefined}`. Lição geral: ao derivar um atributo de outro opcional, trate a ausência — interpolar um `undefined` não falha, vira texto.
+
+**O trade-off, nas palavras da própria aula:** não abusar de teste de estilo — estilo muda o tempo todo e raramente é o que mais importa. O que vale cobrir primeiro é comportamento: o formulário **não** submete dado inválido; com erro, a chamada à API **não** é feita. Teste de estilo se justifica quando o estado visual **carrega significado** (indicar qual campo errou), e mesmo aí existe uma alternativa menos frágil que afirmar cor: afirmar **estrutura** com `within(elemento)` (a mensagem está dentro do bloco do campo certo). Aqui exigiria um `testID` no bloco externo, porque o texto de erro é irmão do container da borda, não filho dele.
+
+### Organização: `describe` que viram frase
+
+`describe("should NOT submit form")` + `it("when the email is invalid")` compõem a frase no relatório ("should NOT submit form when the email is invalid") — descrever **uma regra** e deixar cada `it` ser uma condição. Detalhe a ajustar neste arquivo: o segundo `describe` é irmão do `<SignUpForm />` (nível raiz), então no relatório os negativos perdem o nome do componente; aninhá-lo dentro de `<SignUpForm />` dá a hierarquia completa.
 
 ## 9. Testes de integração: telas inteiras via Expo Router
 
@@ -418,7 +480,7 @@ Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zo
 | 7 | `renderHook`, `jest.mock`, resolução de alias sob o capô | §6 |
 | 8 | `jest --coverage`, 0% mockado vs. 0% sem teste, `beforeEach`/`clearAllMocks` | §7 |
 | 9 | Fronteira do componente, `waitFor`, asserção acoplada a plumbing | §8 |
-| 10 | Estilo, cenários de erro | §8 |
+| 10 | Teste negativo, `findBy*`, `toHaveStyle`, `testID` composto, isolar variável | §8 |
 | 11 | Integração com Expo Router | §9 |
 | 12-14 | Integração: sign-in/out, Home, City Details | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
@@ -456,3 +518,8 @@ Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zo
 - **Asserção acoplada a plumbing:** verificar um argumento incidental do framework (ex.: o evento passado como 2º argumento do `onValid` do RHF) em vez do contrato do componente — quebra sem nenhuma mudança de comportamento.
 - **`expect.objectContaining`:** matcher assimétrico que ignora chaves extras — menos frágil a mudanças, porém incapaz de detectar a ausência de um campo que não foi listado.
 - **Testabilidade ≈ acessibilidade:** um elemento que não pode ser consultado por label/texto/role (o que o usuário percebe) normalmente também não é anunciado por leitor de tela — corrigir um costuma corrigir o outro.
+- **`getBy*` / `findBy*` / `queryBy*`:** `getBy` busca uma vez e lança se não achar; `findBy` espera (async) até achar ou estourar o timeout; `queryBy` retorna `null` em vez de lançar — a forma certa de afirmar ausência.
+- **Teste negativo isolado:** monta tudo válido exceto o campo sob teste, pra a falha ter uma única causa possível. No Zod isso pode ser obrigatório: `undefined` aborta o parse do objeto (o `.refine` não roda), string inválida não.
+- **Asserção "não aconteceu" vazia:** `not.toHaveBeenCalled()` logo após uma ação assíncrona passa trivialmente — só vale depois de aguardar algo que prove que o fluxo terminou.
+- **`toHaveStyle`:** compara o estilo achatado de um elemento host — com Restyle, o valor resolvido (`#D32F2F`), não o nome do token. Detecta fiação, não valor de token; usar com parcimônia, pois estilo muda com frequência.
+- **`testID` derivado (`${testID}-container`):** gerar ids de sub-elementos a partir de uma prop existente, em vez de uma prop nova por elemento — tratar o caso em que a prop base é `undefined`.
