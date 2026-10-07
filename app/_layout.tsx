@@ -2,16 +2,16 @@ import { AuthProvider } from "@/src/domain/Auth/AuthContext";
 import { InMemoryRepository } from "@/src/infra/repositories/adapters/inMemory";
 // import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase";
 import { RepositoryProvider } from "@/src/infra/repositories/RepositoryProvider";
-import { AlertFeedback } from "@/src/infra/services/feedback/adapters/Alert/AlertFeedback";
+// import { AlertFeedback } from "@/src/infra/services/feedback/adapters/Alert/AlertFeedback";
 import { Toast } from "@/src/infra/services/feedback/adapters/Toast/Toast";
 import { ToastFeedback } from "@/src/infra/services/feedback/adapters/Toast/ToastFeedback";
 import { FeedbackProvider } from "@/src/infra/services/feedback/FeedbackProvider";
 import { AsyncStorage } from "@/src/infra/services/storage/adapters/AsyncStorage";
 import { StorageProvider } from "@/src/infra/services/storage/StorageContext";
+import { AppStack } from "@/src/ui/navigation/AppStack";
 import theme from "@/src/ui/theme/theme";
 import { ThemeProvider } from "@shopify/restyle";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
 import { StatusBar } from "react-native";
 import "react-native-reanimated";
 
@@ -52,17 +52,7 @@ export default function RootLayout() {
             value={InMemoryRepository}
           >
             <ThemeProvider theme={theme}>
-              <Stack
-                screenOptions={{
-                  contentStyle: { backgroundColor: theme.colors.background },
-                  headerShown: false,
-                  fullScreenGestureEnabled: true,
-                }}
-              >
-                <Stack.Screen name="(protected)" options={{ headerShown: false }} />
-                <Stack.Screen name="+not-found" />
-                <Stack.Screen name="sign-in" />
-              </Stack>
+              <AppStack />
               <StatusBar barStyle="light-content" />
               <Toast />
             </ThemeProvider>
