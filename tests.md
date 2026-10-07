@@ -530,7 +530,7 @@ Melhorias pequenas, todas conferidas:
 ### Evoluções propostas (nas anotações; **não implementadas** — só `AppStack` foi extraído)
 
 - **Um único `AppProviders` parametrizado** (`repository`, `storage`), usado pelo layout raiz e pelo teste — elimina o risco de duas árvores divergirem.
-- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário.
+- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário. *(Aula 13: começou — `renderApp({ isAuthenticated })`; `initialUrl`/`repository`/`storage` seguem fixos.)*
 - **Reset global** (`inMemoryStorage.clear()` num `beforeEach` de um arquivo registrado em `setupFilesAfterEnv`).
 - **Um fake por porta** (Repository, Storage, HTTP, relógio): toda dependência que sai do processo ganha interface + implementação real + implementação em memória.
 - **Navegação como componente fora de `app/`** (`ProtectedLayout`, `TabLayout` — hoje o `renderApp` ainda os importa direto dos arquivos de rota) e **`appRoutes` em arquivo próprio**, com um teste que compare as chaves com os arquivos de `app/`.
@@ -639,7 +639,7 @@ O que isso ensina (continuação da seção 7):
 useEffect(() => { _fetchData(); }, [dependencies]);   // ← a identidade do array, não o conteúdo
 ```
 
-`dependencies` é um array **novo a cada render** — literal inline em `useCityFindAll` (`[filters.name, filters.categoryId]`) e o default `= []` nos outros três (`useCityFindById`, `useGetRelatedCities`, `useCategoryFindAll`). Cada render cria um array novo, o efeito reexecuta, `_fetchData` altera estado, causa render, e o ciclo recomeça. Medi com um `jest.fn()` espião: **258.933 chamadas ao fetch em 300ms**, contra **1** quando a referência é estável. Com o repository em memória a promessa resolve na hora, o ciclo roda em microtasks e **sufoca os timers** — por isso o `findBy` nunca tem chance de falhar nem de passar: o sintoma é um **travamento**, não uma asserção vermelha.
+`dependencies` é um array **novo a cada render** — literal inline em `useCityFindAll` (`[filters.name, filters.categoryId]`) e o default `= []` nos outros três (`useCityFindById`, `useGetRelatedCities`, `useCategoryFindAll`). Cada render cria um array novo, o efeito reexecuta, `_fetchData` altera estado, causa render, e o ciclo recomeça. Medi com um `jest.fn()` espião: **258.933 chamadas ao fetch em 300ms**, contra **1** quando a referência é estável. Com o repository em memória a promessa resolve na hora, o ciclo roda em microtasks e **sufoca os timers** — por isso o `findBy` nunca tem chance de falhar nem de passar: o sintoma é um **travamento**, não uma asserção vermelha. *(Precisão da aula 13: em testes com `renderRouter` os timers são **fake**, e o que fica sufocado é o laço de polling do `waitFor`/`findBy`, que precisa ceder ao event loop a cada volta — o diagnóstico e a correção não mudam.)*
 
 A correção é passar o próprio array como lista de dependências (`}, dependencies)`) — a semântica pretendida ("refaz o fetch quando as dependências mudam"). Provei a causa sem tocar no arquivo: um `jest.mock` descartável do hook com **só essa linha trocada** e o fluxo inteiro passou em ~180ms. **O mesmo defeito existe em produção** (cada render da Home dispara novos fetches); com latência de rede o ciclo é mais lento, mas não termina — isso é inferência a partir do mecanismo, vale confirmar no log de rede/Reactotron. O `// eslint-disable-next-line react-hooks/exhaustive-deps` na linha acima é o que impediu o linter de apontar.
 
@@ -654,6 +654,74 @@ Lições portáteis: (a) **um teste que renderiza o código real acha o que test
 **4. Semear a sessão pelo storage em vez de clicar pela UI** (verificado): `await inMemoryStorage.setItem("AUTH_KEY", user)` antes de `renderApp()` abre o app direto na Home (`toHavePathname('/')`), sem passar pelo formulário. É a mesma hidratação de sessão do `auth-forms.md` §1, usada de propósito: **prepare o estado pela mesma persistência de onde o app lê**. Isso permite dividir o teste longo — o de sign-out semeia a sessão; o de sign-in começa limpo. (`AUTH_KEY` é uma constante não exportada em `AuthContext.tsx`; o teste duplicaria a string — exportá-la evita divergência.)
 
 **5. Observações menores.** O `expect(await screen.findByText("Bem-vindo"))` do início não tem matcher (padrão da aula 10), enquanto o do fim tem `.toBeOnTheScreen()`. A asserção final **não é vazia** — conferi que, depois do sign-in, `queryByText("Bem-vindo")` é `null` (o login sai da árvore, pois o sign-in faz `router.replace`), então sua reaparição prova o sign-out; mais explícito ainda seria `expect(screen).toHavePathname("/sign-in")`. Na transcrição a tela pós-sign-out às vezes é chamada de "Home" — provável erro de transcrição: neste app, `"Bem-vindo"` é a tela de **login**.
+
+### Aula 13 — Home e City Details: começar autenticado, fake timers e depuração
+
+*(Estado do teste nesta aula: só a primeira metade — a Home autenticada exibe a lista. Pressionar um card e chegar nos detalhes ainda não foi escrito.)*
+
+**O problema:** todo teste de integração começa com o app "recém-aberto", sem sessão. A maioria dos testes (Home, detalhes, perfil) **não é sobre autenticação** — repetir o login em cada um é custo e acoplamento inúteis. Há três formas de começar autenticado, e a escolha é um trade-off:
+
+| Técnica | Como | Passa pelo `AuthProvider` real? | Custo / risco |
+|---|---|---|---|
+| Login pela UI | o fluxo da aula 12 | sim | o mais lento; acopla todo teste ao formulário |
+| Semear o storage | `inMemoryStorage.setItem("AUTH_KEY", user)` antes do `renderApp()` | **sim** (hidratação real) | acopla à chave e à serialização; singleton exige `clear()` |
+| Provider mockado | `renderApp({ isAuthenticated: true })` | **não** | o mais rápido; sem estado no storage; mas `saveAuthUser`/`removeAuthUser` viram no-op |
+
+```tsx
+// src/test-utils/renderApp.tsx
+function MockedAuthProvider({ children }: React.PropsWithChildren) {
+  const authUser: AuthUser = { email: "lucas@coffstack.com", id: "1", fullname: "Lucas Garcez" };
+  return (
+    <AuthContext.Provider value={{ isReady: true, authUser, saveAuthUser: async () => {}, removeAuthUser: async () => {} }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function renderApp(options?: { isAuthenticated?: boolean }) {
+  const FinalAuthProvider = options?.isAuthenticated ? MockedAuthProvider : AuthProvider;
+  // ... mesma árvore de antes, com <FinalAuthProvider> no lugar de <AuthProvider>
+}
+```
+
+**O mecanismo:** `AuthContext` é exportado, então o teste monta o **próprio `Provider` com um valor pronto**, em vez de substituir o componente consumidor. O `ProtectedLayout` só lê `useAuth()`: vê `isReady: true` e um usuário e não redireciona. Verifiquei: o app abre direto na Home (`toHavePathname("/")`) e o storage fica intocado (`AUTH_KEY` segue `null`) — por isso, nesta técnica, não há vazamento de estado entre testes.
+
+**O que o atalho custa (verificado):**
+- **Sign-out vira no-op.** Com `isAuthenticated: true`, apertar "Sair" **não desloga**: o usuário permanece em `/profile` e o botão continua na tela. Com o `AuthProvider` real e a sessão semeada, o mesmo "Sair" volta ao login. Regra: o provider mockado serve a testes **sobre outra feature**; o teste de autenticação (`AuthFlow`) continua com o provider real — e é ele que cobre a hidratação, a splash e o `saveAuthUser`, que o mock nunca executa.
+- **Uma flag booleana que troca um provider inteiro é um interruptor binário.** Quando um teste precisar saber *quem* está logado (ex.: o perfil exibir o nome), `renderApp({ user })` com `user?: AuthUser | null` expressa "está logado?" e "quem?" no mesmo parâmetro. Hoje o usuário fixo (`Lucas Garcez`) é irrelevante — só o `(protected)/_layout` lê `authUser` —, mas vira dado vazando nas asserções assim que alguma tela o exibir.
+
+### `renderRouter` liga os fake timers — e um `setTimeout` cru nunca dispara
+
+No fonte do `expo-router/testing-library`, **cada chamada de `renderRouter` executa `jest.useFakeTimers()`** (e restaura o horário do sistema). Conferi depois de `renderApp()`: `setTimeout.clock` existe e há timers pendentes (`getTimerCount() → 3`). Ou seja: todo teste de integração deste projeto roda sob fake timers, sem nenhuma linha no arquivo de teste pedindo isso (diferente da aula 5, em que o `beforeAll` os ligava explicitamente).
+
+Consequências práticas:
+- `await new Promise(r => setTimeout(r, 400))` **trava para sempre** — o relógio fake não avança sozinho. (Foi exatamente o que fez uma investigação confundir esse travamento com um bug do app, até o fonte da lib ser lido — vale lembrar disso antes de culpar o código.)
+- `findBy*` e `waitFor` funcionam porque o RNTL **avança os fake timers** a cada volta do polling — por isso toda a aula 12 passou sem ninguém notar.
+- Para fazer o tempo passar de propósito: `await act(async () => { jest.advanceTimersByTime(500); })`.
+
+### Ruído nos logs (inofensivo, mas aponta uma lacuna)
+
+- `[Layout children]: No route named "+not-found" exists` a cada `renderApp`: o `AppStack` declara `<Stack.Screen name="+not-found" />`, mas o mapa de rotas do teste não tem essa entrada — uma instância concreta do custo "o mapa duplica `app/`" da aula 11. Registrar a rota no mapa silencia.
+- `An update to … was not wrapped in act(...)`: aparece quando uma mutation termina **depois** que o `fireEvent.press` já retornou (visto com o `setIsLoading(false)` do `useAppMutation`). Aguardar algo com `findBy*` — ou envolver em `act` — resolve.
+
+### Depurando um teste: debugger, call stack e timeout
+
+A aula mostra o depurador do editor (extensão do Jest, ação **Debug** sobre o teste). A ideia central: o teste executa o **código real** do app em Node, então um breakpoint funciona em **qualquer arquivo que o teste alcance** — o `renderItem` da lista, um hook, o `findAll` do repository em memória.
+
+- **Call stack:** o painel lateral mostra a cadeia de quem chamou quem — por exemplo `InMemoryCityRepository.findAll` ← o fetch do `useAppQuery` ← `useCityFindAll` ← a tela. Você enxerga **por que** o código está ali, não só onde. Boa parte dos frames é de `node_modules` (internos do React); o útil é saltar entre os frames **seus**.
+- O breakpoint no `renderItem` parou uma cidade por vez (Rio, Tóquio, Bangkok…) — coerente com as **10** itens iniciais da `FlatList` (aula 12).
+- **O timeout do Jest continua contando enquanto você está parado no breakpoint**, e o teste estoura com `Exceeded timeout` ao retomar. Solução: o **terceiro argumento** de `it(nome, fn, ms)` (a aula usou `50000`; o teste levou ~29s sem estourar), `jest.setTimeout(ms)` ou `--testTimeout`. Equivalente em linha de comando: `node --inspect-brk node_modules/.bin/jest --runInBand <arquivo>` e anexar o depurador (`--runInBand` porque a depuração precisa de um único processo).
+
+> **Atenção ao timeout de depuração que sobra:** o `50000` ficou no teste da Home. Um timeout longo **mascara travamentos** — com o padrão de 5s, o loop do `useAppQuery` (aula 12) foi reportado em 5s; com 50s, seriam 50s de espera por nada. Elevar só durante a sessão de debug e voltar ao padrão depois. (O teste também ainda tem um `//` vazio e um nome — "…navigate to details when the city card is pressed" — que promete mais do que o corpo verifica, o mesmo "nome enganoso" da aula 5, até a segunda metade ser escrita.)
+
+**Qual ferramenta pra qual dúvida** (todas usadas nestas aulas):
+
+| Dúvida | Ferramenta |
+|---|---|
+| O que **está renderizado** agora? | `screen.debug()` — e a árvore que o RNTL já imprime sozinho quando um `getBy`/`findBy` falha |
+| Em que **ordem/quando** as etapas acontecem, e onde o teste para? | marcadores `console.log("STEP +Nms …")` |
+| Algo está sendo chamado **vezes demais** (loop)? | espião `jest.fn()` contando chamadas (foi assim que o refetch infinito apareceu) |
+| Qual é o **valor** de uma variável, e **quem** chamou esta função? | debugger com breakpoint + call stack |
 
 ## 10. Mockando o Repository: erro, loading e dados
 
@@ -686,7 +754,8 @@ Lições portáteis: (a) **um teste que renderiza o código real acha o que test
 | 10 | Teste negativo, `findBy*`, `toHaveStyle`, `testID` composto, isolar variável | §8 |
 | 11 | `renderApp`/`renderRouter`, fakes via DI, o que o 1º teste de integração afirma | §9 |
 | 12 | Fluxo sign-in/sign-out, `collectCoverageFrom`, `getBy`/`findBy` na prática, refetch infinito achado | §9 |
-| 13-14 | Integração: Home, City Details | §9 |
+| 13 | Home autenticada (provider mockado), `renderRouter` liga fake timers, debugger e call stack | §9 |
+| 14 | Integração: Home → City Details | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
 | 16 | Mocks globais | §11 |
 | 17 | Snapshot | §12 |
@@ -739,3 +808,7 @@ Lições portáteis: (a) **um teste que renderiza o código real acha o que test
 - **Loop de efeito por identidade de dependência:** `useEffect(fn, [arrayNovoACadaRender])` reexecuta a cada render; se o efeito altera estado, o ciclo não termina. Em teste com dados instantâneos o sintoma é um travamento (timers sufocados), não uma asserção vermelha.
 - **Semear estado pela persistência:** preparar o cenário gravando na mesma storage de onde o app hidrata (em vez de percorrer a UI até lá) — permite quebrar um teste de jornada longa em testes menores.
 - **`FlatList` virtualiza em teste:** só os primeiros `initialNumToRender` (10 por padrão) itens entram na árvore; `getBy` num item além disso falha.
+- **Provider mockado (valor de Context substituto):** montar o próprio `Context.Provider` com um valor pronto em vez do provider real — rápido e sem estado em storage, mas o código real do provider (hidratação, efeitos, ações) não executa e suas ações viram no-op.
+- **`renderRouter` e fake timers:** `expo-router/testing-library` chama `jest.useFakeTimers()` em cada render; `setTimeout` cru nunca dispara, `findBy*`/`waitFor` avançam o relógio sozinhos, e `act(() => jest.advanceTimersByTime(ms))` faz o tempo passar de propósito.
+- **Call stack (depuração):** a cadeia de quem chamou quem até o breakpoint — mostra o porquê de o código estar ali, além do onde.
+- **Timeout durante o debug:** o limite por teste do Jest segue correndo enquanto o teste está pausado; elevar via 3º argumento de `it`/`jest.setTimeout` só na sessão de debug, e restaurar depois — um timeout longo permanente esconde travamentos.
