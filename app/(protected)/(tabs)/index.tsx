@@ -6,7 +6,7 @@ import { useCategoryFindAll } from "@/src/domain/category/useCases/useCategoryFi
 import { CityPreview } from "@/src/domain/city/City";
 import { useCityFindAll } from "@/src/domain/city/useCases/useCityFindAll";
 import { useAppTheme } from "@/src/ui/theme/useAppTheme";
-import { useScrollToTop } from "@react-navigation/native";
+import { useScrollToTop } from "expo-router/react-navigation";
 import { useRef, useState } from "react";
 import { ListRenderItemInfo } from "react-native";
 import Animated, { FadingTransition } from "react-native-reanimated";

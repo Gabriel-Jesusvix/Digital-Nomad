@@ -30,7 +30,7 @@ export function useAppQuery<DataT>(
   useEffect(() => {
     _fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dependencies]);
+  }, dependencies);
 
   return {
     data,
