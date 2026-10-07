@@ -22,6 +22,7 @@ import { AuthContext, AuthProvider } from "../domain/Auth/AuthContext";
 import { StorageProvider } from "../infra/services/storage/StorageContext";
 import { inMemoryStorage } from "../infra/services/storage/adapters/InMemoryStorage";
 import { AuthUser } from "../domain/Auth/AuthUser";
+import NotFoundScreen from "@/app/+not-found";
 
 
 function MockedAuthProvider({ children }: React.PropsWithChildren) {
@@ -79,6 +80,7 @@ export function renderApp(options?: { isAuthenticated?: boolean }) {
       "(protected)/city-details/[id]": () => <CityDetails />,
       "sign-in": () => <SignInScreen />,
       "sign-up": () => <SignUpScreen />,
+      "+not-found": () => <NotFoundScreen />,
     },
     { wrapper: Wrapper, initialUrl: "/" }
   );

@@ -24,6 +24,7 @@ export function SearchInput({ value, onChangeText, placeholder }: SearchInputPro
       style={{ borderColor: isFocused ? colors.primary : colors.gray1 }}
     >
       <TextInput
+        testID="search-input"
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}

@@ -723,6 +723,66 @@ A aula mostra o depurador do editor (extensão do Jest, ação **Debug** sobre o
 | Algo está sendo chamado **vezes demais** (loop)? | espião `jest.fn()` contando chamadas (foi assim que o refetch infinito apareceu) |
 | Qual é o **valor** de uma variável, e **quem** chamou esta função? | debugger com breakpoint + call stack |
 
+### Aula 14 — Home → City Details: navegar, voltar, buscar
+
+```tsx
+renderApp({ isAuthenticated: true });
+fireEvent.press(await screen.findByText("Rio de Janeiro"));          // card → detalhes
+expect(await screen.findByText("Pontos turísticos")).toBeOnTheScreen();   // ← falha (ver abaixo)
+fireEvent.press(screen.getByTestId("Chevron-left"));                 // volta
+expect(await screen.findByText("Dubai")).toBeOnTheScreen();          // de volta à Home
+fireEvent.changeText(screen.getByTestId("search-input"), "barcelona");
+await waitForElementToBeRemoved(() => screen.getByText("Dubai"));    // busca filtra a lista
+expect(screen.getByText("Barcelona")).toBeOnTheScreen();
+```
+
+#### Estudo de caso: por que o teste falha (e como chegar nisso sozinho)
+
+`Unable to find an element with text: Pontos turísticos` — a navegação **funcionou** (conferi: o pathname é `/city-details/rio-de-janeiro` e o conteúdo da cidade, como "Cristo Redentor", está na tela). O que não existe é a string: o título real no código é **`Pontos Turísticos`** (T maiúsculo, `CityDetailsTouristAttractions.tsx`), e `getByText` com string é **exato e sensível a maiúsculas** (aula 3). Uma letra de diferença.
+
+**Verificado:** trocando só esse "t" por "T", o teste inteiro passa (~336ms) — não havia outra falha escondida atrás desta (diferente do caso da aula 7, em que um erro mascarava outros dois).
+
+**O procedimento, que vale mais que a correção** — como ler a falha de um teste de integração:
+1. **O que foi procurado?** A primeira linha da mensagem (`…with text: Pontos turísticos`).
+2. **Cheguei na tela certa?** Confirme antes de culpar o texto: `expect(screen).toHavePathname(...)` ou um texto que você sabe que está lá. Aqui sim — então o problema é a busca, não a navegação.
+3. **O texto existe, escrito de outro jeito?** Procure um **fragmento** (sem maiúsculas, sem acento) na árvore impressa **ou direto no código-fonte**: `grep -rn "Pontos tur" app src` achou o título certo de uma vez. Diferenças de caixa, acento e espaço saltam aos olhos.
+4. **Corrigir o teste ou o app?** Se o app mostra o texto certo e o teste digitou errado, é o teste.
+
+**Como evitar a classe inteira de erro** (cada uma com seu custo):
+
+| Abordagem | Ganho | Custo |
+|---|---|---|
+| String exata, como está | Estrita: pega mudança de redação | Quebra por qualquer detalhe de caixa/pontuação |
+| Regex com `i`, ex.: `/pontos turísticos/i` | Tolera caixa | Mais frouxa — pode casar texto não intencional (aula 3) |
+| Texto vindo de uma fonte única (constantes ou i18n) importada pelo app **e** pelo teste | Teste e app **não podem divergir** | Exige que o app tenha essa camada (hoje a copy está escrita nos componentes) |
+
+*(O arquivo de teste não foi alterado — a correção é de uma letra, vale você mesmo aplicar e rodar.)*
+
+#### O que este fluxo ensina
+
+**1. Queries enxergam o que o usuário vê — telas cobertas ficam de fora.** O card faz `<Link push …>` (aula 9): os detalhes entram **por cima** da Home, que continua montada por baixo, só que marcada como oculta (`aria-hidden`). O RNTL 13 ignora elementos ocultos por padrão (`defaultIncludeHiddenElements: false`). Contagem de matches com os detalhes em primeiro plano:
+
+| Texto | Query padrão | Incluindo ocultos |
+|---|---|---|
+| `Dubai` | **0** | 1 |
+| `Rio de Janeiro` | 1 (o nome nos detalhes) | 2 (+ o card da Home) |
+| `Tóquio` | 0 | 1 |
+| `Barcelona` | 0 | 1 |
+
+**2. Escolher o "marcador" certo para provar "voltei".** O comentário "Dubai city card" no teste esconde uma decisão boa: para provar que a Home voltou, afirme um elemento que existe **só na Home**. `"Rio de Janeiro"` seria uma prova vazia — existe nas duas telas e passaria mesmo se o "voltar" falhasse. `Dubai` aparece **0** vezes enquanto os detalhes estão por cima; então o `findByText("Dubai")` só passa se a Home realmente estiver visível de novo. A regra: **o marcador tem de estar ausente no estado de origem** (é isso que o `0` acima demonstra).
+
+*Fragilidade do marcador escolhido:* `Dubai` é a **10ª de 15** cidades — exatamente o último item entre os 10 que a `FlatList` renderiza de início (aula 12). Inserir uma cidade antes dele na fixture o empurraria pra fora do render inicial e o teste falharia por um motivo sem relação com navegação. Complemento barato: `expect(screen).toHavePathname("/")` prova a navegação sem depender de conteúdo.
+
+**3. `testID` derivado, de novo.** O `IconButton` ganhou `testID={iconName}` (mesma técnica do `${testID}-container` da aula 10). Custos: o teste fica preso ao **nome do ícone**; todo `IconButton` em produção carrega um `testID`; e `Chevron-left` identifica "um ícone", não "qual botão de voltar" — funciona porque só um está visível por vez (os ocultos são ignorados, ponto 1). Há também um achado de acessibilidade: o `IconButton` **não tem `accessibilityLabel`** nem role, então um botão só de ícone não tem nome acessível — um leitor de tela não anuncia o que ele faz, e o teste só o alcança pelo `testID`. O mesmo "testabilidade ≈ acessibilidade" da aula 9.
+
+**4. `waitForElementToBeRemoved` — esperar o que *some*.** O callback precisa **achar** o elemento na hora da chamada; se ele já não existir, o RNTL lança `The element(s) given to waitForElementToBeRemoved are already removed…` (conferi no fonte) — então ele só serve depois de você ter certeza de que o elemento está lá (aqui, o `findByText("Dubai")` anterior garante). Depois disso ele repete até o elemento sumir. Na prática, o trio de espera: `findBy*` espera **aparecer**; `waitForElementToBeRemoved` espera **sumir**; `queryBy*` + `toBeNull()` é a checagem de ausência **imediata**, sem esperar.
+
+**Por que a busca funciona sem nenhum `advanceTimersByTime`:** o filtro é *debounced* (`useDebounce`), e o `renderRouter` já deixou os timers **fake** (aula 13) — o `waitFor` interno avança o relógio fake a cada volta do polling, então o debounce expira sozinho. Depois da remoção, `getByText` síncrono basta para `Barcelona`/`Espanha`: a lista re-renderiza inteira (regra da aula 12).
+
+#### O que este teste prova — e o que não
+
+Prova a navegação nos dois sentidos e que a busca filtra a lista. **Não prova a busca real:** roda sobre o repository em memória (`toLowerCase().includes`), enquanto a versão Supabase usa `ilike` — semelhante, mas não idêntica (por exemplo, `%` e `_` digitados pelo usuário são curingas no `ilike`). É o "fake que valida diferente do real" da aula 11, agora na busca. *(Esse último ponto é raciocínio sobre o comportamento do Postgres, não algo executado aqui.)* O `50000` de timeout segue no teste — o padrão de 5s teria acusado qualquer travamento bem mais cedo.
+
 ## 10. Mockando o Repository: erro, loading e dados
 
 *(a preencher — repositório fake que retorna erro/demora de propósito, pra testar os estados que a UI trata mas que são difíceis de forçar num backend real.)*
@@ -755,7 +815,7 @@ A aula mostra o depurador do editor (extensão do Jest, ação **Debug** sobre o
 | 11 | `renderApp`/`renderRouter`, fakes via DI, o que o 1º teste de integração afirma | §9 |
 | 12 | Fluxo sign-in/sign-out, `collectCoverageFrom`, `getBy`/`findBy` na prática, refetch infinito achado | §9 |
 | 13 | Home autenticada (provider mockado), `renderRouter` liga fake timers, debugger e call stack | §9 |
-| 14 | Integração: Home → City Details | §9 |
+| 14 | Home → City Details: ler uma falha de integração, queries ignoram ocultos, marcador de tela, `waitForElementToBeRemoved` | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
 | 16 | Mocks globais | §11 |
 | 17 | Snapshot | §12 |
@@ -811,4 +871,8 @@ A aula mostra o depurador do editor (extensão do Jest, ação **Debug** sobre o
 - **Provider mockado (valor de Context substituto):** montar o próprio `Context.Provider` com um valor pronto em vez do provider real — rápido e sem estado em storage, mas o código real do provider (hidratação, efeitos, ações) não executa e suas ações viram no-op.
 - **`renderRouter` e fake timers:** `expo-router/testing-library` chama `jest.useFakeTimers()` em cada render; `setTimeout` cru nunca dispara, `findBy*`/`waitFor` avançam o relógio sozinhos, e `act(() => jest.advanceTimersByTime(ms))` faz o tempo passar de propósito.
 - **Call stack (depuração):** a cadeia de quem chamou quem até o breakpoint — mostra o porquê de o código estar ali, além do onde.
+- **Elementos ocultos em queries:** por padrão (RNTL 13: `defaultIncludeHiddenElements: false`) `getBy`/`findBy`/`queryBy` ignoram o que está oculto da acessibilidade — como uma tela coberta por outra numa pilha. `includeHiddenElements: true` desfaz isso por consulta.
+- **Marcador de tela:** elemento escolhido para provar em que tela o usuário está; precisa existir **só** na tela esperada (e estar ausente no estado de origem), senão a asserção passa vazia.
+- **`waitForElementToBeRemoved`:** espera um elemento **sumir**; exige que ele exista na hora da chamada (senão lança "already removed"). Par de `findBy*` (espera aparecer) e de `queryBy*` + `toBeNull()` (ausência imediata).
+- **Ler uma falha de `getByText`:** (1) o que foi procurado, (2) estou na tela certa?, (3) existe um fragmento do texto escrito de outro jeito (caixa/acento)?, (4) corrijo o teste ou o app? — texto retipado à mão no teste duplica a copy do app e pode divergir.
 - **Timeout durante o debug:** o limite por teste do Jest segue correndo enquanto o teste está pausado; elevar via 3º argumento de `it`/`jest.setTimeout` só na sessão de debug, e restaurar depois — um timeout longo permanente esconde travamentos.
