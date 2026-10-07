@@ -450,7 +450,115 @@ O problema: quando quem usa `TextInput` **não** passa `testID` (sign-in e reset
 
 ## 9. Testes de integração: telas inteiras via Expo Router
 
-*(a preencher — testar navegação de verdade entre `sign-in`/Home/`city-details`, não só um componente isolado.)*
+Integração = **várias partes reais trabalhando juntas; só o que sai do processo (rede, armazenamento nativo) é trocado.** O fluxo de auth foi escolhido por reunir quase tudo que vale integrar: formulário, caso de uso real (`useAuthSignIn`, sem mock) e navegação.
+
+| | Unitário | Integração |
+|---|---|---|
+| Escopo | Um hook, componente ou função | Um fluxo, passando por várias telas |
+| Dependências | Mocks (repository, feedback, auth) | Hooks e providers reais; só a infra externa é substituída |
+| Custo | Rápido; a falha aponta o lugar exato | Mais lento; a falha exige investigar |
+
+**O que torna isso viável é a injeção de dependência** (módulos anteriores): o app roda com `SupabaseRepositories` e `AsyncStorage`; o teste injeta `InMemoryRepository` e `InMemoryStorage` pelos **mesmos providers**. O código de domínio não muda, só a implementação plugada. E por que não usar o `AsyncStorage` real: ele tem dependência nativa e o Jest roda só JavaScript — em vez de mockar a biblioteca (seção 6), troca-se a implementação pela interface.
+
+### A infraestrutura: quatro peças (código real do projeto)
+
+**1. `AppStack` extraída do layout raiz** (`src/ui/navigation/AppStack.tsx`). O `app/_layout.tsx` ficou com o que é só do app (fontes, splash, providers de produção) e renderiza `<AppStack />`; o teste reutiliza o mesmo componente.
+
+**2. `renderApp` com `renderRouter`.** Não há sistema de arquivos no teste, então `renderRouter` (de `expo-router/testing-library`) recebe um **mapa rota → componente** que espelha `app/`. As chaves precisam bater exatamente, inclusive grupos e segmentos dinâmicos:
+```tsx
+renderRouter({
+  _layout: () => <AppStack />,
+  "(protected)/_layout": () => <ProtectedLayout />,
+  "(protected)/(tabs)/index": () => <HomeScreen />,
+  "(protected)/city-details/[id]": () => <CityDetails />,
+  "sign-in": () => <SignInScreen />,
+  // ...
+}, { wrapper: Wrapper, initialUrl: "/" });
+```
+`wrapper` envolve todas as rotas com os providers; `initialUrl: "/"` abre o app como na primeira execução.
+
+**3. Wrapper com os providers de teste** — mesma árvore do layout raiz, sem fontes/`StatusBar`, com fakes: `StorageProvider` → `AuthProvider` → `FeedbackProvider` → `RepositoryProvider` → `ThemeProvider` (+ `<Toast />`). A ordem **não é livre**: `AuthProvider` usa `useStorage()` por dentro, então o storage tem que envolvê-lo (regra da seção 3 do `auth-forms.md`). Cuidado com auto-import: `ThemeProvider` é de `@shopify/restyle` (não de `@react-navigation/native`) e `Toast` é o componente do projeto, não o da biblioteca.
+
+**4. `InMemoryStorage`**: implementa a mesma `IStorage` com um `Map`, exportado como **singleton** (`inMemoryStorage`) para persistir durante o teste e poder ser limpo com `clear()`.
+
+> **Fidelidade do fake, verificada:** diferente do adapter real (que faz `JSON.stringify`/`parse`), `InMemoryStorage` guarda o objeto **como está**. Conferi: `getItem` devolve a **mesma referência** que foi salva (uma mutação no objeto devolvido altera o armazenado), e um `Date` sobrevive como `Date` em memória, mas vira `string` no round-trip por JSON. É um caso concreto do custo "o fake precisa acompanhar o real" (tabela abaixo): um bug de serialização passaria despercebido.
+
+### O primeiro teste — e o que ele realmente afirma
+
+```tsx
+describe('Integration: Auth flow test', () => {
+  test('the user can sign-in and sign-out', async () => {
+    renderApp();
+    expect(await screen.findByText("Bem-vindo"));
+  });
+});
+```
+
+> **Correção em relação ao resumo da aula:** este teste não prova que o app "chega à Home". `"Bem-vindo"` existe **só** em `app/sign-in.tsx` (título da tela de login). Sem usuário salvo, o `ProtectedLayout` redireciona pra `/sign-in` — então o que o teste confirma é que **o app inicializa e o guard de autenticação redireciona**. Verifiquei: `expect(screen).toHavePathname("/sign-in")` passa e `not.toHavePathname("/")` também. Isso é um teste válido (o guard funciona!) — só não é o que o texto dizia.
+
+Melhorias pequenas, todas conferidas:
+- **Afirmar o roteamento em vez do texto:** `expo-router/testing-library` registra matchers próprios — `toHavePathname`, `toHavePathnameWithParams`, `toHaveSegments`, `toHaveSearchParams`, `toHaveRouterState`. Pegadinha: funcionam em runtime, mas o `tsc` acusa `TS2339` — o pacote não entrega os tipos, então é preciso uma declaração própria (augmentation de `jest.Matchers`).
+- **`expect(await findByText(...))` sem matcher** é o mesmo padrão da aula 10 (funciona porque `findBy` lança) — falta `.toBeOnTheScreen()`.
+- **O nome `'the user can sign-in and sign-out'` descreve o cenário da próxima aula**, não este (mesmo problema de "nome enganoso" da aula 5).
+- **`renderApp()` não dá `return` no resultado de `renderRouter`**, então `getPathname()`/`getSegments()` ficam inacessíveis. Os matchers acima (que operam sobre `screen`) e o `testRouter` funcionam mesmo assim, mas devolver o resultado é grátis.
+
+### Problemas encontrados no setup
+
+| Sintoma | O que a anotação diz | O que o repositório mostra |
+|---|---|---|
+| Erro ao importar `renderRouter` de `expo-router/testing-library` | `@types/jest ^30` com `jest ~29.7` → fixar `@types/jest` em `29.5.14` | `@types/jest` **continua `^30.0.0`** (30.0.0 instalado). O diff real foi `expo-router` `~5.0.6` → `5.1.11` (exato) **e** `query-string ^7` adicionado |
+| Aviso "update … not wrapped in `act(...)`" | O teste terminava antes dos `useEffect` dos providers/router | Corrigido com `await screen.findByText(...)` — confere |
+
+**Sobre o primeiro erro, a anotação e o repositório não batem** — vale confirmar qual mudança de fato resolveu. O que consegui verificar: no `expo-router` 5.1.11 instalado, `build/fork/getPathFromState*.js` faz `require("query-string")`, mas o pacote **não declara** `query-string` em `dependencies` nem `peerDependencies` — uma dependência "fantasma", que só resolve se algum outro pacote a deixar içada em `node_modules`. Declará-la no próprio app é o contorno padrão. Já `^7` mantém a linha CommonJS (a 7.1.3 instalada não declara `type: module`); antes de subir de major, conferir se virou ESM — reabriria a questão do `transformIgnorePatterns` da seção 2. Separadamente, alinhar `@types/jest` à major do Jest segue sendo boa higiene (hoje: tipos 30, runtime 29.7).
+
+**Regra geral do segundo caso:** em integração, prefira `findBy*` (espera) a `getBy*` sempre que a tela dependa de carregamento, sessão ou navegação — aqui o redirect só acontece **depois** da hidratação da sessão (`isReady`, `auth-forms.md` §1).
+
+### Trade-offs
+
+| Decisão | Ganho | Custo |
+|---|---|---|
+| Renderizar o app inteiro, não telas isoladas | Testa navegação, providers e casos de uso juntos, como o usuário usa | Mais lento; a falha pode estar em qualquer camada |
+| Fakes em memória via DI, em vez de `jest.mock` | Sem mocks presos a detalhes da biblioteca; testa contra a interface | O fake precisa acompanhar o real — ver abaixo |
+| Mapa de rotas escrito à mão no `renderApp` | Controle explícito do que existe no teste | Duplica a estrutura de `app/`; rota nova não entra sozinha |
+| `TestProviders` copiado do layout raiz | Liberdade pra trocar implementações | Duas árvores que podem divergir (provider novo esquecido no teste) |
+| Storage como singleton | Simples de importar e inspecionar | **Estado vaza entre testes se não for limpo** |
+
+**Duas instâncias concretas neste projeto:**
+- *O fake que valida menos que o real:* `inMemoryAuthRepository.signIn` procura o usuário só pelo e-mail e **ignora a senha**. Um teste de integração com ele nunca pegaria "senha errada deve ser rejeitada" — se o Supabase valida e o fake não, o teste passa e o app quebra.
+- *O vazamento que vem aí:* hoje há um único teste, então nada vaza. Mas na aula 12, um teste de sign-in grava `AUTH_KEY` no `inMemoryStorage` singleton — e o teste seguinte, ao montar o app, **hidrata esse usuário e cai direto na Home**. Sem limpeza entre testes, a ordem de execução passa a decidir o resultado. O projeto não tem nenhum arquivo de setup (a config do Jest é só `{ "preset": "jest-expo" }`); um arquivo de setup só roda se estiver registrado em `setupFilesAfterEnv` — esquecer isso é uma falha silenciosa.
+
+### Evoluções propostas (nas anotações; **não implementadas** — só `AppStack` foi extraído)
+
+- **Um único `AppProviders` parametrizado** (`repository`, `storage`), usado pelo layout raiz e pelo teste — elimina o risco de duas árvores divergirem.
+- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário.
+- **Reset global** (`inMemoryStorage.clear()` num `beforeEach` de um arquivo registrado em `setupFilesAfterEnv`).
+- **Um fake por porta** (Repository, Storage, HTTP, relógio): toda dependência que sai do processo ganha interface + implementação real + implementação em memória.
+- **Navegação como componente fora de `app/`** (`ProtectedLayout`, `TabLayout` — hoje o `renderApp` ainda os importa direto dos arquivos de rota) e **`appRoutes` em arquivo próprio**, com um teste que compare as chaves com os arquivos de `app/`.
+- **Scripts separados** pra rodar unidade no dia a dia e integração no CI (o arquivo já segue a convenção `*.integration.test.tsx`, o que permite filtrar por nome).
+
+### Caminhos alternativos
+
+| Alternativa | Quando escolher | Custo |
+|---|---|---|
+| Mock oficial da lib nativa (`jest.mock`) | Projeto sem DI, ou poucas dependências nativas | Teste acoplado à biblioteca; trocar de storage quebra os testes |
+| MSW na camada HTTP (repository real, rede interceptada) | O risco está no mapeamento da API (payloads, erros, status) | Mais configuração; respostas precisam acompanhar o contrato real |
+| Rotas parciais no `renderRouter` | Fluxos curtos, teste leve | Menos fiel: não pega guards/layouts que ficaram de fora |
+| Tela isolada com navegação mockada | Teste de componente rápido | Testa a intenção (`router.push` chamado), não a navegação |
+| E2E (Maestro/Detox) | Poucos fluxos críticos antes de release | Lento, exige simulador no CI, mais instável |
+
+Divisão comum, fechando com a pirâmide da seção 1: muitos testes unitários, alguns de integração com fakes (como aqui) pros fluxos principais, poucos E2E pro que depende do nativo.
+
+### Checklist pra replicar (com o estado deste projeto)
+
+- [ ] Alinhar `@types/jest` à major do Jest *(hoje: tipos 30, Jest 29.7)*
+- [x] Extrair `AppStack` pra fora de `app/` *(só ela; `ProtectedLayout`/`TabLayout` ainda vêm de `app/`)*
+- [x] Interface + `InMemoryStorage` *(fake de Repository já existia)*
+- [ ] `AppProviders` parametrizado, usado no layout raiz e no teste
+- [x] `renderApp` espelhando `app/` *(`appRoutes` ainda não está em arquivo próprio)*
+- [ ] Limpar os fakes entre testes (`beforeEach` + `setupFilesAfterEnv`)
+- [x] Primeiro teste com `findBy*`
+
+**Próxima aula:** o fluxo de fato — preencher o `SignIn`, submeter e chegar na Home (e possivelmente `SignUp` no mesmo teste).
 
 ## 10. Mockando o Repository: erro, loading e dados
 
@@ -481,7 +589,7 @@ O problema: quando quem usa `TextInput` **não** passa `testID` (sign-in e reset
 | 8 | `jest --coverage`, 0% mockado vs. 0% sem teste, `beforeEach`/`clearAllMocks` | §7 |
 | 9 | Fronteira do componente, `waitFor`, asserção acoplada a plumbing | §8 |
 | 10 | Teste negativo, `findBy*`, `toHaveStyle`, `testID` composto, isolar variável | §8 |
-| 11 | Integração com Expo Router | §9 |
+| 11 | `renderApp`/`renderRouter`, fakes via DI, o que o 1º teste de integração afirma | §9 |
 | 12-14 | Integração: sign-in/out, Home, City Details | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
 | 16 | Mocks globais | §11 |
@@ -523,3 +631,9 @@ O problema: quando quem usa `TextInput` **não** passa `testID` (sign-in e reset
 - **Asserção "não aconteceu" vazia:** `not.toHaveBeenCalled()` logo após uma ação assíncrona passa trivialmente — só vale depois de aguardar algo que prove que o fluxo terminou.
 - **`toHaveStyle`:** compara o estilo achatado de um elemento host — com Restyle, o valor resolvido (`#D32F2F`), não o nome do token. Detecta fiação, não valor de token; usar com parcimônia, pois estilo muda com frequência.
 - **`testID` derivado (`${testID}-container`):** gerar ids de sub-elementos a partir de uma prop existente, em vez de uma prop nova por elemento — tratar o caso em que a prop base é `undefined`.
+- **Teste de integração (neste projeto):** renderiza o app inteiro via `renderRouter` com providers reais e fakes em memória no lugar da infra externa — testa o fluxo como o usuário o percorre, ao custo de velocidade e de manter fakes fiéis.
+- **`renderRouter` + mapa de rotas:** `expo-router/testing-library` não lê o sistema de arquivos; recebe um mapa rota → componente cujas chaves precisam espelhar `app/` exatamente (grupos e `[id]` inclusos).
+- **Matchers do `expo-router/testing-library`:** `toHavePathname`, `toHaveSegments`, `toHaveSearchParams`... afirmam o destino do roteamento em vez de um texto qualquer; sem tipos embarcados (o `tsc` acusa `TS2339`).
+- **Fake infiel ao real:** um adapter em memória que valida menos (ex.: `signIn` que ignora a senha) ou serializa diferente (guarda a referência, sem JSON) faz o teste passar enquanto o app quebra.
+- **Dependência fantasma:** um pacote que o código de uma lib `require`a sem declarar em `dependencies`/`peerDependencies` — só resolve se outro pacote o deixar içado em `node_modules`; declará-lo no app é o contorno.
+- **Singleton em memória sem reset:** estado compartilhado entre testes faz a ordem de execução decidir o resultado; limpar num setup global (registrado em `setupFilesAfterEnv`).
