@@ -525,7 +525,7 @@ Melhorias pequenas, todas conferidas:
 
 **Duas instâncias concretas neste projeto:**
 - *O fake que valida menos que o real:* `inMemoryAuthRepository.signIn` procura o usuário só pelo e-mail e **ignora a senha**. Um teste de integração com ele nunca pegaria "senha errada deve ser rejeitada" — se o Supabase valida e o fake não, o teste passa e o app quebra.
-- *O vazamento que vem aí:* hoje há um único teste, então nada vaza. Mas na aula 12, um teste de sign-in grava `AUTH_KEY` no `inMemoryStorage` singleton — e o teste seguinte, ao montar o app, **hidrata esse usuário e cai direto na Home**. Sem limpeza entre testes, a ordem de execução passa a decidir o resultado. O projeto não tem nenhum arquivo de setup (a config do Jest é só `{ "preset": "jest-expo" }`); um arquivo de setup só roda se estiver registrado em `setupFilesAfterEnv` — esquecer isso é uma falha silenciosa.
+- *O vazamento que vem aí:* hoje há um único teste, então nada vaza. Mas na aula 12, um teste de sign-in grava `AUTH_KEY` no `inMemoryStorage` singleton — e o teste seguinte, ao montar o app, **hidrata esse usuário e cai direto na Home**. Sem limpeza entre testes, a ordem de execução passa a decidir o resultado *(refinado na aula 12: isso só acontece dentro do mesmo arquivo — ver abaixo)*. O projeto não tem nenhum arquivo de setup (a config do Jest é só `{ "preset": "jest-expo" }`); um arquivo de setup só roda se estiver registrado em `setupFilesAfterEnv` — esquecer isso é uma falha silenciosa.
 
 ### Evoluções propostas (nas anotações; **não implementadas** — só `AppStack` foi extraído)
 
@@ -558,7 +558,98 @@ Divisão comum, fechando com a pirâmide da seção 1: muitos testes unitários,
 - [ ] Limpar os fakes entre testes (`beforeEach` + `setupFilesAfterEnv`)
 - [x] Primeiro teste com `findBy*`
 
-**Próxima aula:** o fluxo de fato — preencher o `SignIn`, submeter e chegar na Home (e possivelmente `SignUp` no mesmo teste).
+→ O fluxo de fato (sign-in → Home → sign-out) foi escrito na aula 12, logo abaixo.
+
+### Aula 12 — o fluxo de sign-in e sign-out
+
+**A técnica central: o fluxo do usuário é o roteiro do teste.** Antes de qualquer código, escreva os passos como comentários (o que o usuário faz, na ordem) e traduza cada um. O teste fica legível como uma história e a ordem das asserções deixa de ser decisão arbitrária:
+
+```tsx
+test('the user can sign-in and sign-out', async () => {
+  renderApp();
+  expect(await screen.findByText("Bem-vindo"));                       // tela renderizou
+
+  fireEvent.changeText(screen.getByPlaceholderText('seu email'), "...");   // digita credenciais
+  fireEvent.changeText(screen.getByPlaceholderText('digite sua senha'), "...");
+  fireEvent.press(screen.getByText(/entrar/i));                       // aperta Entrar
+
+  expect(await screen.findByText('signed in: ...')).toBeOnTheScreen();   // toast que o usuário vê
+  expect(await screen.findByText("Rio de Janeiro")).toBeOnTheScreen();   // Home renderizou
+  expect(screen.getByText("Bangkok")).toBeOnTheScreen();
+
+  fireEvent.press(screen.getByText("Perfil"));                        // aba Perfil
+  fireEvent.press(screen.getByText("Sair"));                          // sign-out
+  expect(await screen.findByText("Bem-vindo")).toBeOnTheScreen();     // voltou ao login
+});
+```
+
+**Quando usar `getBy`, `queryBy` ou `findBy` — a regra aplicada neste teste:**
+- `findBy` pro **primeiro** elemento que depende de algo assíncrono (o toast, a Home); `getBy` pros elementos que aparecem **no mesmo render** (`"Bangkok"` logo depois de `"Rio de Janeiro"`).
+- `getByText("Perfil")` acha o *rótulo da aba*, que existe desde o início; e `getByText("Sair")` logo após o `press` funciona porque o `fireEvent` roda dentro de `act` e a tela de perfil renderiza síncrona, de estado local. Se ela buscasse dados, seria `findBy`.
+- `getByPlaceholderText` acha os campos **sem nenhum `testID`** — confirmando o que a aula 9 antecipou (os 5 `testID` do `SignUpForm` eram dispensáveis). `/entrar/i` é frouxo de propósito, mas tem custo: se surgir outro texto com "entrar" na tela, `getByText` passa a lançar "múltiplos elementos".
+
+> **Atenção com a lista:** `FlatList` virtualiza também no teste. Medi: das 15 cidades da fixture só **10** estão na árvore (`Rio de Janeiro` … `Dubai`); `Cidade do México`, `Hong Kong`, `Košice`, `Melbourne` e `Singapura` **não** são encontradas por `getBy`. `"Bangkok"` (3ª) é segura; um item da 11ª posição em diante exigiria rolar a lista ou aumentar `initialNumToRender`.
+
+### Toast na tela vs. função chamada
+
+No teste unitário de `useAuthSignIn` (aula 7), `expect(mockSendFeedback).toHaveBeenCalledWith(...)` prova que a **função foi chamada** — não que o usuário viu algo. Aqui a asserção é o **texto do toast na tela**, o que o usuário de fato enxerga. A aula demonstra isso do jeito certo: comentar o envio do feedback faz o teste de integração falhar (vermelho antes do verde, aula 4).
+
+Nuance: o teste fica **independente da implementação do `FeedbackService`**, mas continua preso ao **canal de UI** que o wrapper injeta (`ToastFeedback` + `<Toast />`). Refatorar o interior do serviço mantém o teste verde; trocar o canal por `AlertFeedback` (um `Alert.alert` nativo, que não entra na árvore do RNTL) o quebraria. Os dois testes **não são redundantes**: o unitário fixa o contrato do hook (payload exato, caminho de erro); o de integração fixa a fiação ponta a ponta.
+
+### Cobertura como bússola enquanto se escreve o fluxo
+
+```jsonc
+// package.json
+"jest": { "preset": "jest-expo", "collectCoverageFrom": ["{src,app}/**/*.{ts,tsx}"] }
+```
+
+Isso é um **glob**, não uma regex. **O mecanismo:** sem `collectCoverageFrom`, o Jest só reporta arquivos que algum teste chegou a **carregar** — o que nunca foi importado simplesmente não existe no relatório, e a porcentagem fica bonita por omissão. Com o glob, tudo que casa entra, mesmo a 0%. Medido neste projeto:
+
+| | Sem o glob | Com o glob |
+|---|---|---|
+| Arquivos no relatório | 64 | **86** (+22 nunca carregados: `SupabaseAuthRepository.ts`, `AsyncStorage.ts`, `AlertFeedback.tsx`, `reset-password.tsx`, `useAuthSendResetPasswordEmail.ts`…) |
+| Statements | 42,39% (145/342) | **31,08%** (129/415) |
+
+E há um segundo efeito: sem o glob o relatório também contava **16 imagens** (15 JPGs de cidades + a logo) como "100% cobertas" — cada `require` de imagem vira um stub de 1 statement. Os 16 statements de diferença no numerador (145 vs 129) são exatamente eles. O glob torna o número **menor e honesto**: acrescenta o que faltava e tira o que inflava. *(Ambas as execuções incluíam o teste de integração ainda falhando — vale a comparação relativa, não os valores absolutos de um estado "pós-fluxo".)*
+
+**A técnica da aula:** rode `jest --coverage` e abra `coverage/lcov-report/index.html` (a pasta já está no `.gitignore`) como **medidor de progresso**. Cada passo do fluxo acende mais linhas: renderizar o login cobre `SignInScreen`, mas `handleSignIn` segue vermelho; após o `press`, `saveAuthUser` fica verde; só após o "Sair" `removeAuthUser` e `useAuthSignOut` ficam verdes.
+
+O que isso ensina (continuação da seção 7):
+- **Renderizado ≠ exercitado:** um arquivo aparece coberto no nível do módulo enquanto seus handlers estão vermelhos.
+- **Cobertura "falsa" por teste unitário:** `useAuthSignIn` mostra 100% por causa do teste unitário (tudo mockado) — mas nunca foi testado **ligado** a nada. É o espelho da seção 7: lá, módulo mockado dá 0%; aqui, módulo testado só com mocks dá 100% que não diz se ele funciona integrado.
+- **Um teste de integração cobre arquivos sem teste próprio** (`useAuthSignOut`, `AuthContext`, `SignInScreen`, `Profile`) — o custo-benefício que justifica o setup caro da aula 11.
+- **Nem tudo precisa de 100%:** o `if (error) throw` do repository fica de fora, e tudo bem.
+
+### Decisões e trade-offs deste teste
+
+| Decisão | Ganho | Custo |
+|---|---|---|
+| Um teste longo e sequencial pra jornada inteira | Lê como uma história; o estado carrega naturalmente | A 1ª falha esconde os passos seguintes; o nome não diz qual metade quebrou; dividir exige semear estado (abaixo) |
+| Afirmar dados da fixture pelo nome (`"Rio de Janeiro"`, `"Bangkok"`) | Verifica o que o usuário vê; determinístico com o repository em memória | Acoplado aos dados de demonstração — renomear uma cidade quebra o teste |
+| Queries por placeholder/texto, sem `testID` | Nenhuma mudança no código de produção | Placeholder some ao digitar; regex frouxo pode colidir; `getByLabelText` segue impossível (lacuna da aula 9) |
+| Unitário + integração para o mesmo caso de uso | Contrato exato + fiação real | Alguma sobreposição de intenção |
+
+### Achados no repositório (verificados rodando)
+
+**1. O teste, como está, falha — e o motivo é de dados.** Ele faz login com `gabriel@gmail.com`, mas a fixture de `authUsers` só tem `lucas@coffstack.com` e `maria@coffstack.com`. `signIn` lança `"user not found"`, a tela mostra o toast de **erro** (`error ao fazer login` / `user not found`) e o de sucesso nunca aparece: `Unable to find an element with text: signed in: gabriel@gmail.com`. O teste de integração fez o trabalho dele — mostrou exatamente o que o usuário veria. As credenciais da transcrição (`Lucas@tec.com`/`12345678`) também não são as da fixture: a fixture do repositório é a fonte da verdade. Usar `lucas@coffstack.com` ou adicionar o usuário a `authUsers` resolve. E, como o fake **ignora a senha** (verifiquei: `"qualquer-coisa"` é aceita), o teste não consegue provar que senha errada seria rejeitada.
+
+**2. Bug em `useAppQuery`: refetch infinito (o achado mais importante).** Ao corrigir as credenciais, o teste **trava** na Home — nem o `findBy` estoura o próprio timeout de 1s; só o timeout do Jest encerra. Isolei: com sessão semeada (sem sign-in) a Home também trava, então o problema é a Home, não o login.
+
+```ts
+useEffect(() => { _fetchData(); }, [dependencies]);   // ← a identidade do array, não o conteúdo
+```
+
+`dependencies` é um array **novo a cada render** — literal inline em `useCityFindAll` (`[filters.name, filters.categoryId]`) e o default `= []` nos outros três (`useCityFindById`, `useGetRelatedCities`, `useCategoryFindAll`). Cada render cria um array novo, o efeito reexecuta, `_fetchData` altera estado, causa render, e o ciclo recomeça. Medi com um `jest.fn()` espião: **258.933 chamadas ao fetch em 300ms**, contra **1** quando a referência é estável. Com o repository em memória a promessa resolve na hora, o ciclo roda em microtasks e **sufoca os timers** — por isso o `findBy` nunca tem chance de falhar nem de passar: o sintoma é um **travamento**, não uma asserção vermelha.
+
+A correção é passar o próprio array como lista de dependências (`}, dependencies)`) — a semântica pretendida ("refaz o fetch quando as dependências mudam"). Provei a causa sem tocar no arquivo: um `jest.mock` descartável do hook com **só essa linha trocada** e o fluxo inteiro passou em ~180ms. **O mesmo defeito existe em produção** (cada render da Home dispara novos fetches); com latência de rede o ciclo é mais lento, mas não termina — isso é inferência a partir do mecanismo, vale confirmar no log de rede/Reactotron. O `// eslint-disable-next-line react-hooks/exhaustive-deps` na linha acima é o que impediu o linter de apontar.
+
+Lições portáteis: (a) **um teste que renderiza o código real acha o que teste unitário não acha** — `useAppQuery` nunca tinha sido montado com chamadores reais até a Home ser renderizada; (b) **quando `findBy` não passa nem falha dentro do próprio timeout, suspeite de loop de render/efeito** e conte chamadas com um `jest.fn()`; (c) **provar a causa trocando um módulo inteiro num teste descartável** antes de mexer no código é uma forma barata de bissecção.
+
+**3. O vazamento do storage, refinado.** Na aula 11 anotei que o singleton `inMemoryStorage` vazaria entre testes. Verifiquei o escopo: vaza **só dentro do mesmo arquivo** — um teste que semeou a sessão deixou `AUTH_KEY` lá e o teste seguinte, sem semear nada, abriu **já logado**; já um **arquivo diferente** enxergou `null`, porque o Jest dá a cada arquivo de teste seu próprio registro de módulos. O teste atual se limpa sozinho (o "Sair" remove a chave), mas se falhar antes dele, a sessão sobra pros testes seguintes do arquivo. `beforeEach(() => inMemoryStorage.clear())` resolve.
+
+**4. Semear a sessão pelo storage em vez de clicar pela UI** (verificado): `await inMemoryStorage.setItem("AUTH_KEY", user)` antes de `renderApp()` abre o app direto na Home (`toHavePathname('/')`), sem passar pelo formulário. É a mesma hidratação de sessão do `auth-forms.md` §1, usada de propósito: **prepare o estado pela mesma persistência de onde o app lê**. Isso permite dividir o teste longo — o de sign-out semeia a sessão; o de sign-in começa limpo. (`AUTH_KEY` é uma constante não exportada em `AuthContext.tsx`; o teste duplicaria a string — exportá-la evita divergência.)
+
+**5. Observações menores.** O `expect(await screen.findByText("Bem-vindo"))` do início não tem matcher (padrão da aula 10), enquanto o do fim tem `.toBeOnTheScreen()`. A asserção final **não é vazia** — conferi que, depois do sign-in, `queryByText("Bem-vindo")` é `null` (o login sai da árvore, pois o sign-in faz `router.replace`), então sua reaparição prova o sign-out; mais explícito ainda seria `expect(screen).toHavePathname("/sign-in")`. Na transcrição a tela pós-sign-out às vezes é chamada de "Home" — provável erro de transcrição: neste app, `"Bem-vindo"` é a tela de **login**.
 
 ## 10. Mockando o Repository: erro, loading e dados
 
@@ -590,7 +681,8 @@ Divisão comum, fechando com a pirâmide da seção 1: muitos testes unitários,
 | 9 | Fronteira do componente, `waitFor`, asserção acoplada a plumbing | §8 |
 | 10 | Teste negativo, `findBy*`, `toHaveStyle`, `testID` composto, isolar variável | §8 |
 | 11 | `renderApp`/`renderRouter`, fakes via DI, o que o 1º teste de integração afirma | §9 |
-| 12-14 | Integração: sign-in/out, Home, City Details | §9 |
+| 12 | Fluxo sign-in/sign-out, `collectCoverageFrom`, `getBy`/`findBy` na prática, refetch infinito achado | §9 |
+| 13-14 | Integração: Home, City Details | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
 | 16 | Mocks globais | §11 |
 | 17 | Snapshot | §12 |
@@ -637,3 +729,9 @@ Divisão comum, fechando com a pirâmide da seção 1: muitos testes unitários,
 - **Fake infiel ao real:** um adapter em memória que valida menos (ex.: `signIn` que ignora a senha) ou serializa diferente (guarda a referência, sem JSON) faz o teste passar enquanto o app quebra.
 - **Dependência fantasma:** um pacote que o código de uma lib `require`a sem declarar em `dependencies`/`peerDependencies` — só resolve se outro pacote o deixar içado em `node_modules`; declará-lo no app é o contorno.
 - **Singleton em memória sem reset:** estado compartilhado entre testes faz a ordem de execução decidir o resultado; limpar num setup global (registrado em `setupFilesAfterEnv`).
+- **Fluxo do usuário como roteiro:** escrever os passos que o usuário faz como comentários e traduzir cada um em código — a ordem do teste vem da jornada, não de decisão arbitrária.
+- **`collectCoverageFrom` (glob):** inclui no relatório de cobertura todos os arquivos que casam, mesmo os nunca carregados por um teste (0%); sem ele, só aparece o que foi importado — e assets (imagens) viram stubs "100% cobertos" que inflam o número.
+- **Cobertura "falsa" por mocks:** um arquivo com 100% vindo só de um teste unitário totalmente mockado não prova que funciona integrado; o inverso (módulo mockado = 0%) está na seção 7.
+- **Loop de efeito por identidade de dependência:** `useEffect(fn, [arrayNovoACadaRender])` reexecuta a cada render; se o efeito altera estado, o ciclo não termina. Em teste com dados instantâneos o sintoma é um travamento (timers sufocados), não uma asserção vermelha.
+- **Semear estado pela persistência:** preparar o cenário gravando na mesma storage de onde o app hidrata (em vez de percorrer a UI até lá) — permite quebrar um teste de jornada longa em testes menores.
+- **`FlatList` virtualiza em teste:** só os primeiros `initialNumToRender` (10 por padrão) itens entram na árvore; `getBy` num item além disso falha.
