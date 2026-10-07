@@ -310,7 +310,81 @@ beforeEach(() => {
 
 ## 8. Teste de componente real: formulário, estilo e erro
 
-*(a preencher — `SignUpForm` sob teste: preencher campos, disparar validação do Zod, checar mensagem de erro renderizada.)*
+```tsx
+it('should submit the form when all fields are filled in correctly', async () => {
+  const onSubmitMock = jest.fn();
+  renderComponent(<SignUpForm onSubmit={onSubmitMock} />);
+
+  fireEvent.changeText(screen.getByTestId('fullname-input'), "Gabriel Jesus");
+  fireEvent.changeText(screen.getByTestId('email-input'), "gabriel.jesus@example.com");
+  fireEvent.changeText(screen.getByTestId('password-input'), "password123");
+  fireEvent.changeText(screen.getByTestId('confirm-password-input'), "password123");
+  fireEvent.press(screen.getByTestId('submit-button'));
+
+  await waitFor(() => {
+    expect(onSubmitMock).toHaveBeenCalledWith(
+      expect.objectContaining({ fullname: "Gabriel Jesus", email: "gabriel.jesus@example.com", password: "password123" }),
+      undefined // ← o comentário original dizia "onInvalid callback"; está errado (ver abaixo)
+    );
+  });
+});
+```
+
+### A fronteira do componente: o conceito central desta aula
+
+A **fronteira** de um componente é o seu contrato de entrada e saída: o que ele recebe (props) e o que ele devolve pra fora (callbacks chamados, o que renderiza). `SignUpForm` recebe `onSubmit` e, quando o usuário preenche tudo certo e aperta o botão, chama `onSubmit` com os dados. **Só isso é o contrato dele.** O teste olha exatamente pra isso — e nada além.
+
+| Dentro da fronteira (teste unitário, esta aula) | Fora da fronteira (teste de integração, aulas 11-14) |
+|---|---|
+| `onSubmit` é chamado com os dados certos | `useAuthSignUp` realmente cadastra o usuário |
+| Campos preenchidos chegam no payload | O toast de sucesso aparece |
+| — | A tela volta pro login (`router.back`) |
+
+Esse recorte espelha a decisão de design da seção 10 do `auth-forms.md` ("formulário como caixa-preta, a tela só conhece `onSubmit`"): o componente foi **desenhado** com uma fronteira estreita, e o teste respeita essa mesma fronteira — não inspeciona o estado interno do React Hook Form nem espera efeitos que quem consome o `onSubmit` produz. Um bom design de fronteira vira, quase de graça, um bom limite de teste.
+
+**O critério portável pra decidir "unitário ou integração":** não é "quantos arquivos o teste toca". É "a asserção atravessa a fronteira do componente e passa a depender da responsabilidade de um colaborador?". `expect(onSubmitMock).toHaveBeenCalled...` não atravessa — o mock é o próprio colaborador, substituído. `expect(screen.getByText('cadastro feito com sucesso'))` atravessaria — dependeria de `useAuthSignUp`, do `FeedbackService` e do `Toast` funcionando juntos, o que é integração por definição.
+
+### `waitFor`: por que o `expect` não pode rodar logo depois do `press`
+
+```tsx
+await waitFor(() => { expect(onSubmitMock).toHaveBeenCalledWith(...) });
+```
+
+`handleSubmit` do React Hook Form é **assíncrono**: no código-fonte dele, antes de chamar o seu `onSubmit` ele faz `await _runSchema()` (roda o resolver do Zod) e só depois `await onValid(fieldValues, e)`. Ou seja, quando `fireEvent.press` retorna, `onSubmit` **ainda não foi chamado** — um `expect` síncrono logo em seguida rodaria cedo demais e falharia, mesmo com o código correto (falso negativo).
+
+`waitFor` re-executa o callback repetidamente até ele parar de lançar erro ou estourar o timeout (por padrão, na ordem de ~1s de limite e ~50ms entre tentativas). **Trade-offs pra guardar:**
+- Um `waitFor` que **falha** só avisa depois do timeout inteiro — uma suíte com muitos testes quebrados fica lenta pra falhar.
+- O callback é executado **várias vezes** — deve conter só asserções, nunca ações com efeito colateral (`fireEvent`, `press`), que se repetiriam a cada tentativa.
+- Quando o que se espera é um **elemento aparecendo**, `await screen.findByText(...)` é o atalho idiomático (um `waitFor` + `getByText` já combinados). `waitFor` com `expect` é a forma certa quando o alvo é um callback/mock, como aqui.
+
+### Achado: o comentário `onInvalid callback` está errado — e a asserção ficou colada num detalhe incidental
+
+O segundo argumento `undefined` não é o `onInvalid` do RHF. Conferido no código do RHF: `SubmitHandler<T> = (data: T, event?: BaseSyntheticEvent) => ...` e a chamada é `await onValid(fieldValues, e)` — o segundo argumento é o **evento do press**. É `undefined` porque `fireEvent.press` chama `onPress` sem objeto de evento. Consequências:
+
+- Num dispositivo real, ou com `userEvent.press` (que gera um evento de verdade), esse argumento seria um objeto — e a asserção quebraria sem nenhuma mudança de comportamento.
+- A asserção está acoplada a um **detalhe de plumbing do framework**, não ao contrato do componente (que é só "os dados").
+
+Mais robusto — afirmar só o que cruza a fronteira, ignorando argumentos incidentais:
+```tsx
+expect(onSubmitMock).toHaveBeenCalledTimes(1);
+expect(onSubmitMock.mock.calls[0][0]).toMatchObject({ fullname: "Gabriel Jesus", /* ... */ });
+```
+
+**`objectContaining` e o quarto campo:** o payload real tem quatro campos (inclui `confirmPassword`; quem reduz pra três é a tela, ver seção 13 do `auth-forms.md`), mas a asserção lista só três. Se alguém deixasse de enviar `confirmPassword`, o teste continuaria verde. É o trade-off clássico: matcher frouxo = menos frágil a mudanças, mas também menos capaz de pegar regressão. Numa fronteira que **é** o contrato, vale perguntar se o payload completo não deveria ser afirmado por inteiro.
+
+### `testID` ×5 em código de produção — e a alternativa que também melhora acessibilidade
+
+Foram adicionados cinco `testID` ao `SignUpForm` só pra o teste achar os elementos. Funciona, mas é o "último recurso" da aula 4, e aqui havia alternativas:
+- `getByPlaceholderText('seu nome completo')` acharia cada input (o placeholder já é repassado ao `TextInput` nativo); `getByText('Criar conta')` acharia o botão.
+- `getByLabelText('Nome completo')` — a opção mais alinhada ao "testar como o usuário usa" — **não funciona hoje**: o `TextInput` do projeto renderiza `label` como um `<Text>` irmão, sem ligá-lo ao input por `accessibilityLabel`.
+
+Isso é uma lacuna de **acessibilidade**, não só de teste: um leitor de tela não anuncia "Nome completo" quando o campo recebe foco, porque nada associa o texto ao input. Passar `accessibilityLabel={label}` ao `RNTextInput` resolveria os dois problemas de uma vez. **Regra geral:** se um elemento não pode ser consultado pelo que o usuário percebe (label, texto, role), um usuário de tecnologia assistiva também não consegue percebê-lo — testabilidade e acessibilidade são, bem frequentemente, o mesmo problema.
+
+### O que este teste não pega: caminho feliz apenas
+
+Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zod fosse removido do formulário, esse teste continuaria passando — ele não consegue detectar um formulário permissivo demais. Pra ver este teste falhar (o exercício da aula 4) seria preciso quebrar o fluxo de dados, não a validação. É o teste do caminho **inválido** (senhas diferentes → `onSubmit` **não** chamado + mensagem de erro) que de fato fixa a validação — tema da aula 10.
+
+**Detalhe:** `fireEvent.changeText` define o valor final de uma vez, sem simular tecla por tecla (`userEvent.type` faria isso, com a mesma ressalva de `await` e fake timers da aula 5).
 
 ## 9. Testes de integração: telas inteiras via Expo Router
 
@@ -343,7 +417,8 @@ beforeEach(() => {
 | 6 | Render customizado (`wrapper`, `Omit`), `jest.fn()`, convenção de pasta de teste | §5 |
 | 7 | `renderHook`, `jest.mock`, resolução de alias sob o capô | §6 |
 | 8 | `jest --coverage`, 0% mockado vs. 0% sem teste, `beforeEach`/`clearAllMocks` | §7 |
-| 9-10 | `SignUpForm`, estilo, cenários de erro | §8 |
+| 9 | Fronteira do componente, `waitFor`, asserção acoplada a plumbing | §8 |
+| 10 | Estilo, cenários de erro | §8 |
 | 11 | Integração com Expo Router | §9 |
 | 12-14 | Integração: sign-in/out, Home, City Details | §9 |
 | 15 | Erro, loading, mock de Repository | §10 |
@@ -376,3 +451,8 @@ beforeEach(() => {
 - **Alias resolvido por prefixo, não por convenção geral:** `babel-preset-expo` (ou `moduleNameMapper` do Jest, noutros setups) troca um prefixo literal registrado no `tsconfig.json`/config — qualquer caminho que não bata caractere por caractere com esse prefixo cai no resolvedor padrão do Node, tratado como se fosse um pacote de `node_modules`.
 - **Coverage mede execução, não corretude:** a % de cobertura conta linhas que rodaram durante os testes — um módulo inteiramente mockado sempre aparece em 0%, mesmo que o comportamento dele esteja bem simulado; um teste fraco pode gerar 100% sem provar nada.
 - **`clearAllMocks` vs. `resetAllMocks` vs. `restoreAllMocks`:** o primeiro só zera histórico de chamadas; o segundo também apaga implementações configuradas (`mockImplementation`/`mockReturnValue`); o terceiro só se aplica a `jest.spyOn`, devolvendo a função original.
+- **Fronteira do componente:** o contrato de entrada/saída (props recebidas, callbacks chamados, o que renderiza). Teste unitário afirma só o que cruza essa fronteira; o que depende da responsabilidade de um colaborador (mutation, toast, navegação) é teste de integração.
+- **`waitFor` / `findBy*`:** repetem uma asserção (ou query) até passar ou estourar o timeout — necessários quando o efeito é assíncrono (ex.: `handleSubmit` do RHF aguarda o resolver antes de chamar `onSubmit`). O callback do `waitFor` roda várias vezes: só asserções, nunca ações.
+- **Asserção acoplada a plumbing:** verificar um argumento incidental do framework (ex.: o evento passado como 2º argumento do `onValid` do RHF) em vez do contrato do componente — quebra sem nenhuma mudança de comportamento.
+- **`expect.objectContaining`:** matcher assimétrico que ignora chaves extras — menos frágil a mudanças, porém incapaz de detectar a ausência de um campo que não foi listado.
+- **Testabilidade ≈ acessibilidade:** um elemento que não pode ser consultado por label/texto/role (o que o usuário percebe) normalmente também não é anunciado por leitor de tela — corrigir um costuma corrigir o outro.
