@@ -30,3 +30,13 @@ jest.mock('react-native-maps', () => {
     PROVIDER_DEFAULT: undefined,
   };
 });
+
+jest.mock("@expo/vector-icons/createIconSetFromIcoMoon", () => {
+
+  const { View } = require("react-native");
+  function FakeIcon(props: any) {
+    return <View testID={`icon-${props.name}`} />;
+  }
+
+  return () => FakeIcon;
+});

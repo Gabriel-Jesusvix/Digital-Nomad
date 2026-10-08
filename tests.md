@@ -911,7 +911,115 @@ Ambos são lacunas na **máquina de estados** do hook (faltam transições: ao i
 
 ## 11. Mocks globais
 
-*(a preencher — mocks que valem pro projeto inteiro, configurados uma vez (ex.: `jest.setup.js`), em vez de repetidos por arquivo de teste.)*
+Alguns componentes não pertencem ao que você quer testar e ainda **atrapalham**: disparam efeitos assíncronos, dependem de módulo nativo ou de fonte. Mockar cada um em cada arquivo de teste é repetição; a saída é um **mock global**, registrado uma vez, que vale para toda a suíte. Esta aula mostra o caminho completo — achar o problema, mockar um componente, tornar o mock global — e o projeto, no estado atual, ilustra dois tropeços reais desse caminho.
+
+### 1. O problema: um componente que atualiza estado depois que o teste acaba
+
+O teste do `CityCard` (renderiza nome e país da cidade) passa, mas imprime:
+
+```
+An update to Icon inside a test was not wrapped in act(...)
+```
+
+**Como localizar a causa — bisseção por remoção:** comente o filho suspeito e veja se o warning some. Aqui, comentar o `<Icon />` do card o fez desaparecer, então o culpado é o ícone. Conferi **por que** no código do `@expo/vector-icons` (`createIconSet`): ao montar, se a fonte ainda não carregou, ele faz `await Font.loadAsync(font)` e **depois** `this.setState({ fontIsLoaded: true })` — uma atualização de estado assíncrona, que chega depois que um teste síncrono já terminou. Medido: o teste do card gera **1** warning de `act` sem o mock e **0** com ele.
+
+Por que os testes de integração não mostravam isso (explicação da aula): eles têm várias asserções assíncronas (`findBy*`), o que dá tempo de o estado do ícone atualizar **dentro** de uma espera do RNTL. O problema só aparece num teste curto e síncrono — vale lembrar que "não vejo o warning" não é o mesmo que "não há o problema".
+
+### 2. Mockar um componente: módulo → função → componente
+
+O projeto cria o ícone assim: `const IconFromIcoMoon = createIconSetFromIcoMoon(config, fontName, fontFile)`. O módulo exporta **uma função que devolve um componente** (conferi: `export default function (config, expoFontName, expoAssetId)`). O mock precisa ter exatamente esse formato:
+
+```tsx
+jest.mock("@expo/vector-icons/createIconSetFromIcoMoon", () => {
+  const { View } = require("react-native");           // import DENTRO da factory
+  function FakeIcon(props: any) {
+    return <View testID={props.name} />;
+  }
+  return () => FakeIcon;                               // módulo = função que devolve o componente
+});
+```
+
+**Os tropeços de montar isso, na ordem em que aparecem:**
+- **Retornar `null` não funciona.** O app faz `<IconFromIcoMoon … />`; se a função devolve `null`, não há componente para renderizar. O fake tem de ser um componente de verdade (aqui, uma `View`).
+- **A factory não pode referenciar variáveis de fora** (`not allowed to reference any out-of-scope variables`): o `jest.mock` é içado (*hoisted*) para o topo do arquivo, antes dos `import`, então nada declarado fora dela existe ainda. Por isso `View` vem de um `require` **dentro** da factory.
+- **O fake recebe as mesmas props do componente real** (`name`, `size`, `color`). Usar `testID={props.name}` torna o mock **observável**: o teste afirma **qual ícone** foi renderizado (`getByTestId("Favorite-outline")`) sem renderizar o glifo. Isso pega erros que um mock mudo (`null`/`View` vazia) deixaria passar — um ícone errado, ou nenhum. **Custo:** o fake ignora `size` e `color`, então nada disso é verificável.
+
+### 3. Tornar global: `setupFilesAfterEnv`
+
+Um mock repetido em todo arquivo de teste vira ruído; o Jest executa arquivos de setup **antes de cada arquivo de teste**:
+
+```jsonc
+// package.json
+"jest": { "preset": "jest-expo", "setupFilesAfterEnv": ["<rootDir>/jest.setup.tsx"] }
+```
+
+`<rootDir>` é um token que o Jest troca pela raiz do projeto (um erro de digitação aqui — `root dir` em vez de `rootDir` — foi um dos tropeços da aula).
+
+**`setupFiles` ou `setupFilesAfterEnv`? Medi o que existe em cada fase:**
+
+| | `setupFiles` | `setupFilesAfterEnv` |
+|---|---|---|
+| Roda | **antes** do framework de teste ser instalado | **depois** de instalado, antes de cada arquivo de teste |
+| `expect`, `beforeEach` | **`undefined`** | disponíveis |
+| `jest` (para `jest.mock`) | disponível | disponível |
+
+Para **só** registrar `jest.mock`, os dois servem. Mas qualquer coisa que use `expect.extend`, `beforeEach` ou `afterEach` (reset global de mocks, matchers próprios) **exige** `setupFilesAfterEnv` — por isso ele é a escolha padrão, e é onde este projeto já tinha o `jest.setup.tsx` (com os mocks do Reanimated e do `react-native-maps`).
+
+Outros detalhes do arquivo:
+- **Por que `.ts` virou `.tsx`:** JSX dentro da factory (`<View … />`) só é parseado em `.tsx`. A alternativa é escrever `React.createElement(View, …)` — como o mock do `react-native-maps`, **no mesmo arquivo** — e manter `.ts`. O arquivo agora mistura os dois estilos.
+- **O que mockar globalmente:** olhe o `jest.setup.tsx` como um catálogo — worklets/Reanimated, mapas, ícones. O critério comum: **o que depende de módulo nativo, fonte ou animação e é irrelevante para o comportamento que você testa**.
+
+**Global vs. local — quando cada um:**
+
+| | Mock local (no arquivo de teste) | Mock global (`jest.setup`) |
+|---|---|---|
+| Use para | Um comportamento específico daquele teste; mocks que **afirmam chamadas** (o `useRepository` da aula 7) | Dependências nativas/assíncronas/irrelevantes que **todo** teste deveria ignorar |
+| Risco | Repetição entre arquivos | **Esconde o comportamento real de toda a suíte** e pode colidir com o que os testes usam (ver 4.2) |
+| Escape | — | Um teste que precise do real opta por sair com `jest.unmock(...)`/`jest.requireActual(...)` *(API padrão do Jest; não exercitada aqui)* |
+
+### 4. Dois problemas no estado atual do repositório (verificados)
+
+**4.1 — O Jest nem roda: `setupFiles` aponta para um arquivo que não existe.** O `package.json` ganhou:
+
+```jsonc
+"setupFiles": ["<rootDir>/setup-jest.tsx"]
+```
+
+mas o mock foi parar no `jest.setup.tsx` que já existia, e `setup-jest.tsx` não existe. Resultado: `Validation Error: Module <rootDir>/setup-jest.tsx in the setupFiles option was not found` — **a suíte inteira deixa de executar**, nenhum teste passa nem falha. Correção: remover a entrada `setupFiles` (verificado: sem ela, a suíte roda). **Resolvido:** a entrada foi removida. Nota: ela chegou a ser renomeada de `setup-jest.tsx` para `setup.jest.tsx` — e continuou quebrada, porque renomear a **referência** não cria o **arquivo**; o arquivo real é `jest.setup.tsx`, já registrado em `setupFilesAfterEnv`. Repare no contraste com a aula 11: **registrar errado um arquivo é um erro alto** (o Jest valida o caminho de cara), enquanto **esquecer de registrar** é uma falha silenciosa — o arquivo simplesmente nunca roda.
+
+**4.2 — `Found multiple elements with testID: Chevron-left`** (o erro que você colou, no teste da Home). Reproduzi e achei os dois elementos:
+
+| # | Elemento | Origem |
+|---|---|---|
+| 0 | `View` pressionável (`accessible`, com `onClick`, 2 filhos) | o `Pressable` do `IconButton`, que desde a aula 14 tem `testID={iconName}` |
+| 1 | `View` vazia, sem handler | o `FakeIcon` do mock global, que faz `testID={props.name}` |
+
+O `IconButton` renderiza `<Pressable testID="Chevron-left"> … <Icon name="Chevron-left" />`. Com o ícone real, só o `Pressable` tinha esse id; com o mock global, o ícone passou a **injetar o mesmo id** — dois elementos no mesmo namespace de `testID`. **Um mock que introduz `testID` entra no mesmo espaço de nomes dos `testID` do produto, e pode colidir.**
+
+| Correção | Avaliação |
+|---|---|
+| **Prefixar o id do mock:** `testID={`icon-${props.name}`}` | **A recomendada.** Verificado: o teste da Home e o do `CityCard` (consultando `icon-Favorite-outline`) passam. Mexe só no mock; o produto fica intacto |
+| Renomear o `testID` do `IconButton` | Funciona, mas altera código de produção para acomodar um mock |
+| `getAllByTestId("Chevron-left")[0]` | **Evitar:** esconde a colisão e depende da ordem dos elementos na árvore |
+| Consultar por `accessibilityLabel` | O melhor a longo prazo — o `IconButton` hoje não tem nome acessível (aula 14); resolver isso elimina a dependência de `testID` |
+
+**Regra para qualquer mock com `testID`:** dê ao mock um **prefixo próprio** (`icon-`, `map-`), para que ele nunca dispute o mesmo id com o produto.
+
+> **Resolvido.** Aplicada a correção recomendada: o `FakeIcon` em `jest.setup.tsx` agora faz ``testID={`icon-${props.name}`}`` e o teste do `CityCard` consulta `icon-Favorite-outline`. O teste de integração da Home **não precisou mudar** — `getByTestId("Chevron-left")` voltou a achar um único elemento (o `Pressable` do `IconButton`). Suíte inteira: 9 suítes, 18 testes verdes.
+>
+> **Lição de depuração:** o teste que falhava não era o que estava errado. Quando uma mudança **global** (um mock no setup) quebra um teste **distante**, a correção costuma estar no que mudou, não no teste que acusou — corrigir o teste de integração (por exemplo, escolhendo `[0]` entre os dois elementos) teria deixado a colisão no lugar, pronta para quebrar o próximo teste que consultasse um ícone.
+
+*(Detalhe menor: o teste do `CityCard` deixou um `screen.debug()` — útil na aula para olhar a árvore, ruído se for commitado.)*
+
+### Resumo: quando mockar globalmente, o que evitar
+
+| Situação | Faça | Evite |
+|---|---|---|
+| Warning de `act` que você não entende | Bisseção: remova/substitua filhos até ele sumir; depois leia o código do culpado | Silenciar o warning ou ignorá-lo porque "o teste passa" |
+| Mockar um componente | Respeitar o **formato do módulo** (função → componente); `require` dentro da factory; fake que recebe props | Retornar `null`; referenciar variáveis de fora da factory |
+| Registrar um mock global | `setupFilesAfterEnv` (e conferir que o caminho existe) | Deixar entradas de config apontando para arquivos que não existem |
+| `testID` num mock | Prefixo próprio (`icon-<nome>`) | Reusar o mesmo id que o produto usa |
+| Mockar o que é irrelevante | Dependências nativas/assíncronas que todo teste ignoraria | Mockar globalmente o que algum teste precisa ver de verdade |
 
 ## 12. Snapshot testing
 
@@ -939,7 +1047,7 @@ Ambos são lacunas na **máquina de estados** do hook (faltam transições: ao i
 | 13 | Home autenticada (provider mockado), `renderRouter` liga fake timers, debugger e call stack | §9 |
 | 14 | Home → City Details: ler uma falha de integração, queries ignoram ocultos, marcador de tela, `waitForElementToBeRemoved` | §9 |
 | 15 | Estados de erro/loading/vazio, `renderApp({ repositories })`, `DeepPartial`, promise controlada, cobertura de branches | §10 |
-| 16 | Mocks globais | §11 |
+| 16 | Mock global de componente (`jest.mock` + `setupFilesAfterEnv`), `setupFiles` vs `AfterEnv`, colisão de `testID` do mock | §11 |
 | 17 | Snapshot | §12 |
 
 ## Glossário
@@ -1002,5 +1110,10 @@ Ambos são lacunas na **máquina de estados** do hook (faltam transições: ao i
 - **Promise controlada (deferred):** o fake devolve uma promise cujo `resolve` o teste guarda — dá controle exato do instante em que o estado de loading termina, tornando a asserção de um estado transitório determinística.
 - **Coberto ≠ afirmado:** um ramo pode aparecer 100% coberto porque todo teste passa por ele (ex.: o loading inicial) sem que nenhum o verifique; cobertura de **branches** é o que expõe cenários nunca exercitados.
 - **Teste de transição:** teste que vai de um estado a outro (erro → sucesso, sucesso → erro) — pega defeitos de máquina de estados (erro velho, dado velho) que testes de estado isolado não pegam.
+- **Mock de componente (módulo → função → componente):** a factory do `jest.mock` precisa reproduzir o **formato** do módulo real; fake que recebe as mesmas props e expõe algo observável (`testID`) permite afirmar *qual* componente/ícone foi renderizado sem renderizá-lo de verdade.
+- **Regra da factory do `jest.mock`:** não pode referenciar variáveis de fora (o `jest.mock` é içado para antes dos `import`); dependências entram por `require` dentro da factory.
+- **`setupFiles` vs. `setupFilesAfterEnv`:** o primeiro roda antes do framework de teste (sem `expect`/`beforeEach`); o segundo depois (com eles). Mocks globais com `jest.mock` servem em ambos; hooks e matchers exigem `AfterEnv`.
+- **Bisseção por remoção:** localizar a causa de um warning comentando/substituindo filhos do componente até o sintoma desaparecer.
+- **Colisão de `testID` com mock:** um mock que injeta `testID` (ex.: `testID={props.name}`) divide o namespace com os `testID` do produto; `getByTestId` passa a lançar "múltiplos elementos" — prefixar o id do mock evita.
 - **Jest não checa tipos:** o Babel remove os tipos antes de rodar; um teste verde convive com `tsc` vermelho — rodar `tsc --noEmit` separadamente no CI.
 - **Timeout durante o debug:** o limite por teste do Jest segue correndo enquanto o teste está pausado; elevar via 3º argumento de `it`/`jest.setTimeout` só na sessão de debug, e restaurar depois — um timeout longo permanente esconde travamentos.

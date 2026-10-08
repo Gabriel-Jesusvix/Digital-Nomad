@@ -7,7 +7,7 @@ describe("integration: Home", () => {
 
     fireEvent.press(await screen.findByText("Rio de Janeiro"));
 
-    expect(await screen.findByText(/Pontos turísticos/i)).toBeOnTheScreen();
+    expect(await screen.findByText("Pontos Turísticos")).toBeOnTheScreen();
 
     fireEvent.press(screen.getByTestId("Chevron-left"));
 
