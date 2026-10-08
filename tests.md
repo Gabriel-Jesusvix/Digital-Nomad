@@ -530,7 +530,7 @@ Melhorias pequenas, todas conferidas:
 ### Evoluções propostas (nas anotações; **não implementadas** — só `AppStack` foi extraído)
 
 - **Um único `AppProviders` parametrizado** (`repository`, `storage`), usado pelo layout raiz e pelo teste — elimina o risco de duas árvores divergirem.
-- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário. *(Aula 13: começou — `renderApp({ isAuthenticated })`; `initialUrl`/`repository`/`storage` seguem fixos.)*
+- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário. *(Aulas 13 e 15: já tem `isAuthenticated` e `repositories` (override parcial por teste, aula 15); `initialUrl`/`storage` seguem fixos.)*
 - **Reset global** (`inMemoryStorage.clear()` num `beforeEach` de um arquivo registrado em `setupFilesAfterEnv`).
 - **Um fake por porta** (Repository, Storage, HTTP, relógio): toda dependência que sai do processo ganha interface + implementação real + implementação em memória.
 - **Navegação como componente fora de `app/`** (`ProtectedLayout`, `TabLayout` — hoje o `renderApp` ainda os importa direto dos arquivos de rota) e **`appRoutes` em arquivo próprio**, com um teste que compare as chaves com os arquivos de `app/`.
@@ -785,7 +785,129 @@ Prova a navegação nos dois sentidos e que a busca filtra a lista. **Não prova
 
 ## 10. Mockando o Repository: erro, loading e dados
 
-*(a preencher — repositório fake que retorna erro/demora de propósito, pra testar os estados que a UI trata mas que são difíceis de forçar num backend real.)*
+Até aqui só o caminho feliz foi testado. **Erro, loading e lista vazia são comportamento de produto** — precisam existir na tela antes de poderem ser testados — e testá-los exige uma forma de **forçar** o backend a falhar, demorar ou devolver vazio, sem mexer no fake compartilhado. Esta aula resolve as duas coisas.
+
+### 1. Primeiro o app precisa ter o estado — escrever o teste revela a lacuna
+
+A Home não tratava loading nem erro: com `findAll` falhando, a tela simplesmente ficava vazia. Como a `FlatList` **não sabe por que está vazia** (carregando? falhou? não há dados?), a tela precisa dizer, usando o que o hook já devolve:
+
+```tsx
+const { data: cities, isLoading, error } = useCityFindAll(/* ... */);
+
+function renderEmptyComponent() {
+  let Content;
+  if (isLoading)   Content = <Text>carregando cidades...</Text>;
+  else if (error)  Content = <Text>erro ao carregar cidades.{error.message}</Text>;
+  else             Content = <Text>não há cidades no momento</Text>;
+  return <Box alignSelf="center" mt="s32">{Content}</Box>;
+}
+// <Animated.FlatList ... ListEmptyComponent={renderEmptyComponent()} />
+```
+
+A **ordem do `if` importa**: o estado inicial do `useAppQuery` é `isLoading: true`, então loading vem primeiro. Lição: ao tentar escrever o teste de um estado, a pergunta certa é "o produto trata isso?" — aqui não tratava. (A aula avisa que o tratamento de verdade vem com o TanStack Query, no módulo seguinte; isto é o mínimo para viabilizar o teste.)
+
+### 2. Injetar a falha: `renderApp({ repositories })`
+
+```tsx
+// src/test-utils/renderApp.tsx
+type DeepPartial<T> = { [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P] };
+
+export function renderApp(options?: { isAuthenticated?: boolean; repositories?: DeepPartial<Repositories> }) {
+  const finalRepository: Repositories = merge(clonedeep(InMemoryRepository), options?.repositories ?? {});
+  // ... <RepositoryProvider value={finalRepository}> ...
+}
+
+// no teste — só o findAll de city é substituído; o resto do repository continua funcionando
+renderApp({ isAuthenticated: true, repositories: { city: { findAll: async () => Promise.reject(new Error("server is down!")) } } });
+```
+
+**Três jeitos de forçar um cenário — quando usar cada um:**
+
+| Jeito | Escopo | Quando usar | Custo |
+|---|---|---|---|
+| Editar o repository em memória | Global e permanente | **Só** para ver o estado na mão, rodando o app (jogar um `throw` no `findAll`) — nunca commitar | Afeta todos os testes e telas |
+| `jest.mock` do módulo do repository | O arquivo de teste inteiro | Projeto **sem** injeção de dependência | Preso ao caminho do módulo (aula 7); troca o módulo todo, perde o resto |
+| **Override por teste via DI** (esta aula) | **Um** teste | O padrão aqui: o app já recebe o repository por Provider | Infra de teste a manter — o `renderApp` cresce |
+
+**Por que `cloneDeep` + `merge` (comportamento verificado, não suposto):**
+- O clone é **outro objeto** e **preserva o prototype** das classes — o `findById` e o resto seguem existindo; o `merge` troca só `findAll` na **cópia**; o original fica intacto.
+- **Sem o clone, o `merge` muta o singleton compartilhado** `InMemoryRepository` — a falha injetada num teste vazaria pros testes seguintes do mesmo arquivo (cada arquivo tem seu registro de módulos, aula 12). É essa a razão do `cloneDeep`.
+- **Armadilhas do `merge`:** arrays são mesclados **por índice** (`[1,2,3]` + `[9]` → `[9,2,3]`) e `undefined` **não** sobrescreve. Funciona bem aqui porque o que se troca são **funções**; pra sobrescrever **dados**, passe uma função que devolve o array novo em vez de um array.
+
+**`DeepPartial`: o tipo que parece proteger e não protege (verificado).** Testei 4 usos contra o tipo da aula:
+
+| Override | Tipo da aula | Variante que preserva funções |
+|---|---|---|
+| `findAll: async () => 123` (retorno errado) | **compila** | erro `TS2322` |
+| `findAll: "oops"` (nem é função) | **compila** | erro `TS2322` |
+| `naoExiste: async () => []` (chave inexistente) | erro `TS2353` | erro `TS2353` |
+| `findAll: async () => []` (correto) | ok | ok |
+
+O motivo: para membros que são **funções**, `T[P] extends object` é verdadeiro (função é objeto), e o tipo mapeado "colapsa" num `{}` — que aceita qualquer coisa não nula. O tipo checa **chaves**, não **contratos**; um fake com retorno errado compila, e o teste passa ou quebra por motivo sem relação com o app. A correção é preservar funções antes de recursar:
+
+```ts
+type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends (...args: any[]) => any ? T[P]
+                 : T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+```
+**Regra:** um tipo usado para construir fakes tem de checar o fake contra o **contrato real** — senão ele deriva em silêncio (a mesma família do "fake infiel" da aula 11). E um utilitário de tipo copiado da internet merece um "teste de tipo" de dois minutos: escreva usos certos e errados e veja o que o `tsc` rejeita — foi isso que revelou a lacuna.
+
+### 3. Testar os três estados
+
+```tsx
+// erro: dois fragmentos independentes, não a string inteira
+expect(await screen.findByText(/erro ao carregar cidades/i)).toBeOnTheScreen();
+expect(await screen.findByText(/server is down!/i)).toBeOnTheScreen();
+```
+A mensagem real é `erro ao carregar cidades.server is down!` (ponto sem espaço); buscar os dois pedaços separados evita acoplar o teste ao **formato** do separador. Ambos casam o mesmo `<Text>` (o `getByText` compara o conteúdo combinado). Custo do regex frouxo: o da aula 3.
+
+**Loading é um estado transitório — como testá-lo sem depender de sorte.** O teste da lista vazia afirma `findByText(/carregando cidades/i)` e depois `/não há cidades/i`. Funciona, mas por uma **coincidência de ordem de execução** (raciocínio, não medição): o fake resolve numa microtask *depois* que o `render` síncrono devolve, então o primeiro polling ainda vê o loading. Com um fake que resolve imediatamente, a janela é finíssima. A técnica determinística — **promise controlada** (verificada):
+
+```tsx
+let resolve!: (v: any[]) => void;
+const pending = new Promise<any[]>((r) => (resolve = r));
+renderApp({ isAuthenticated: true, repositories: { city: { findAll: () => pending } } });
+
+expect(await screen.findByText(/carregando cidades/i)).toBeOnTheScreen();   // fica carregando enquanto você não resolver
+await act(async () => { resolve([]); });                                    // você decide quando termina
+expect(await screen.findByText(/não há cidades no momento/i)).toBeOnTheScreen();
+expect(screen.queryByText(/carregando cidades/i)).toBeNull();               // e o loading SOME
+```
+Ela dá controle total do instante, e ainda afirma algo que o teste atual não afirma: que o loading **desaparece**. O delay de 2s com `setTimeout` mostrado na aula serve para **ver o estado na mão** no app rodando — no teste, use a promise controlada.
+
+### 4. Cobertura como mapa dos cenários que faltam
+
+Medi o arquivo da Home (`app/(protected)/(tabs)/index.tsx`):
+
+| Testes rodados | Statements | **Branches** | Lines |
+|---|---|---|---|
+| Só o fluxo feliz | 94,44% | **75%** | 94,44% |
+| Os 3 testes | 100% | **100%** | 100% |
+
+O número que revela é o de **branches**: o caminho feliz nunca entra nas ramificações de erro e de lista vazia. Há uma sutileza que a aula destaca: o ramo de **loading** aparece coberto em *todo* teste, porque todo render começa carregando — mas só o teste da lista vazia o **afirma**. **Coberto ≠ afirmado.** Use a cobertura para achar ramificações nunca exercitadas e escrever um cenário para cada; não leia "linha verde" como "alguém verificou isso".
+
+### 5. Armadilhas — o que evitar (verificadas rodando)
+
+Os três testes da aula passam, mas cada estado foi testado **isolado, a partir do render inicial**. Testando **transições**, aparecem dois defeitos:
+
+- **Erro velho que não some.** Falha no 1º fetch → o usuário digita na busca → o 2º fetch **dá certo e devolve lista vazia** → a tela continua mostrando `erro ao carregar cidades` em vez de `não há cidades no momento`. Causa: o `useAppQuery` nunca zera `error` quando um novo fetch começa.
+- **Dado velho com erro invisível.** 1º fetch traz cidades → o usuário digita → o 2º fetch **falha** → a lista antiga **continua na tela** e nenhuma mensagem de erro aparece. Duas causas: o hook mantém `data` quando falha, e os estados só são mostrados no `ListEmptyComponent`, que **só renderiza com a lista vazia**. O usuário vê resultados desatualizados como se a busca tivesse funcionado.
+
+Ambos são lacunas na **máquina de estados** do hook (faltam transições: ao iniciar um fetch, limpar o erro; decidir o que fazer com `data` numa falha) — exatamente o que o TanStack Query resolve. Enquanto isso não chega, os testes que fecham a lacuna são os de **transição** (erro → sucesso, sucesso → erro), não mais um teste de estado isolado.
+
+- **Jest verde, `tsc` vermelho.** `error.message` em `index.tsx` dá `TS2339`: `if (error)` estreita `unknown` para `{}`, que não tem `message`. O Jest passa porque o Babel remove os tipos — ele **não** checa tipos. Correção: `error instanceof Error ? error.message : String(error)`. E rodar `tsc --noEmit` junto do Jest no CI (mesma família do `@ts-ignore` no `auth-forms.md`).
+
+### Resumo: quando usar, o que evitar
+
+| Situação | Use | Evite |
+|---|---|---|
+| Forçar erro/vazio num teste de integração | Override por teste via DI (`renderApp({ repositories })`) | Editar o fake compartilhado; `jest.mock` quando já há DI |
+| Testar um estado transitório (loading) | Promise controlada (deferred) | Depender da ordem de microtasks ou de delays reais |
+| Tipar overrides de fakes | `DeepPartial` que **preserva funções** | O `DeepPartial` ingênuo, copiado sem testar o que ele rejeita |
+| Sobrescrever com `lodash.merge` | Clonar antes; trocar funções/objetos | Mutar o singleton; sobrescrever arrays por `merge` |
+| Ler cobertura | Procurar **branches** nunca exercitados | Tratar linha verde como "afirmado" |
+| Cobrir estados de UI | Testar também as **transições** entre estados | Só testar cada estado a partir do render inicial |
 
 ## 11. Mocks globais
 
@@ -816,7 +938,7 @@ Prova a navegação nos dois sentidos e que a busca filtra a lista. **Não prova
 | 12 | Fluxo sign-in/sign-out, `collectCoverageFrom`, `getBy`/`findBy` na prática, refetch infinito achado | §9 |
 | 13 | Home autenticada (provider mockado), `renderRouter` liga fake timers, debugger e call stack | §9 |
 | 14 | Home → City Details: ler uma falha de integração, queries ignoram ocultos, marcador de tela, `waitForElementToBeRemoved` | §9 |
-| 15 | Erro, loading, mock de Repository | §10 |
+| 15 | Estados de erro/loading/vazio, `renderApp({ repositories })`, `DeepPartial`, promise controlada, cobertura de branches | §10 |
 | 16 | Mocks globais | §11 |
 | 17 | Snapshot | §12 |
 
@@ -875,4 +997,10 @@ Prova a navegação nos dois sentidos e que a busca filtra a lista. **Não prova
 - **Marcador de tela:** elemento escolhido para provar em que tela o usuário está; precisa existir **só** na tela esperada (e estar ausente no estado de origem), senão a asserção passa vazia.
 - **`waitForElementToBeRemoved`:** espera um elemento **sumir**; exige que ele exista na hora da chamada (senão lança "already removed"). Par de `findBy*` (espera aparecer) e de `queryBy*` + `toBeNull()` (ausência imediata).
 - **Ler uma falha de `getByText`:** (1) o que foi procurado, (2) estou na tela certa?, (3) existe um fragmento do texto escrito de outro jeito (caixa/acento)?, (4) corrijo o teste ou o app? — texto retipado à mão no teste duplica a copy do app e pode divergir.
+- **Override de repository por teste (DI):** `renderApp({ repositories })` substitui só os métodos desejados numa **cópia** (`cloneDeep` + `merge`) do repository em memória — escopo de um teste, tipado, reaproveitando a fiação real.
+- **`DeepPartial` que checa chaves mas não contratos:** a versão ingênua colapsa funções num `{}` que aceita qualquer coisa; a versão que preserva funções (`T[P] extends (...args) => any ? T[P] : …`) checa o fake contra o contrato real.
+- **Promise controlada (deferred):** o fake devolve uma promise cujo `resolve` o teste guarda — dá controle exato do instante em que o estado de loading termina, tornando a asserção de um estado transitório determinística.
+- **Coberto ≠ afirmado:** um ramo pode aparecer 100% coberto porque todo teste passa por ele (ex.: o loading inicial) sem que nenhum o verifique; cobertura de **branches** é o que expõe cenários nunca exercitados.
+- **Teste de transição:** teste que vai de um estado a outro (erro → sucesso, sucesso → erro) — pega defeitos de máquina de estados (erro velho, dado velho) que testes de estado isolado não pegam.
+- **Jest não checa tipos:** o Babel remove os tipos antes de rodar; um teste verde convive com `tsc` vermelho — rodar `tsc --noEmit` separadamente no CI.
 - **Timeout durante o debug:** o limite por teste do Jest segue correndo enquanto o teste está pausado; elevar via 3º argumento de `it`/`jest.setTimeout` só na sessão de debug, e restaurar depois — um timeout longo permanente esconde travamentos.

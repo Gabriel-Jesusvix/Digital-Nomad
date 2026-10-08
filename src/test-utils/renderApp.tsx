@@ -23,7 +23,13 @@ import { StorageProvider } from "../infra/services/storage/StorageContext";
 import { inMemoryStorage } from "../infra/services/storage/adapters/InMemoryStorage";
 import { AuthUser } from "../domain/Auth/AuthUser";
 import NotFoundScreen from "@/app/+not-found";
+import { Repositories } from "../domain/Repositories";
+import clonedeep from "lodash.clonedeep";
+import merge from "lodash.merge";
 
+type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
 
 function MockedAuthProvider({ children }: React.PropsWithChildren) {
   const authUser: AuthUser = {
@@ -46,7 +52,15 @@ function MockedAuthProvider({ children }: React.PropsWithChildren) {
   );
 }
 
-export function renderApp(options?: { isAuthenticated?: boolean }) {
+export function renderApp(options?: {
+  isAuthenticated?: boolean;
+  repositories?: DeepPartial<Repositories>;
+}) {
+
+  const finalRepository: Repositories = merge(
+    clonedeep(InMemoryRepository),
+    options?.repositories ?? {}
+  );
 
   const FinalAuthProvider = options?.isAuthenticated
     ? MockedAuthProvider
@@ -57,7 +71,7 @@ export function renderApp(options?: { isAuthenticated?: boolean }) {
       <StorageProvider storage={inMemoryStorage}>
         <FinalAuthProvider>
           <FeedbackProvider value={ToastFeedback}>
-            <RepositoryProvider value={InMemoryRepository}>
+            <RepositoryProvider value={finalRepository}>
               <ThemeProvider theme={theme}>
                 {children}
                 <Toast />

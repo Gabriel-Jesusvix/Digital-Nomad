@@ -12,6 +12,7 @@ import { ListRenderItemInfo } from "react-native";
 import Animated, { FadingTransition } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDebounce } from "@/src/utils/hooks/useDebounce";
+import { Text } from "@/src/ui/components/Text";
 
 export default function HomeScreen() {
   const { spacing } = useAppTheme();
@@ -23,7 +24,7 @@ export default function HomeScreen() {
     null
   );
 
-  const { data: cities } = useCityFindAll(
+  const { data: cities, isLoading, error } = useCityFindAll(
     {
       name: debouncedCityName,
       categoryId: selectedCategoryId,
@@ -42,6 +43,28 @@ export default function HomeScreen() {
     );
   }
 
+  function renderEmptyComponent() {
+    let Content;
+
+    if (isLoading) {
+      Content = <Text>carregando cidades...</Text>;
+    } else if (error) {
+      Content = (
+        <Text>
+          erro ao carregar cidades.{error.message}
+        </Text>
+      )
+    } else {
+      Content = <Text>não há cidades no momento</Text>;
+    }
+
+    return (
+      <Box alignSelf="center" mt="s32">
+        {Content}
+      </Box>
+    );
+  }
+
   return (
     <Screen style={{ paddingHorizontal: 0 }}>
       <Animated.FlatList
@@ -55,6 +78,7 @@ export default function HomeScreen() {
         data={cities}
         renderItem={renderItem}
         showsVerticalScrollIndicator={false}
+        ListEmptyComponent={renderEmptyComponent()}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={
           <CityFilter
