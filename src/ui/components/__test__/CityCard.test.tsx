@@ -18,6 +18,6 @@ describe("<CityCard />", () => {
 
     screen.debug();
     expect(screen.getByText("Brasil")).toBeOnTheScreen();
-    expect(screen.getByTestId("Favorite-outline")).toBeOnTheScreen();
+    expect(screen.getByTestId("icon-Favorite-outline")).toBeOnTheScreen();
   });
 });

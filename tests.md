@@ -1,1119 +1,660 @@
-# Testes em React Native — Guia de Estudo
+# Testes em React Native — Guia do Especialista
 
-> Organizado por **conceito**, no mesmo espírito de [arquitetura-frontend.md](arquitetura-frontend.md) e [auth-forms.md](auth-forms.md): problema → mecanismo por trás → trade-off → como replicar. Preenchido com código real conforme as aulas avançam — nada especulativo. Um mapa aula → seção fica no fim.
+> **Para quem é:** o dev que quer sair de "sei escrever um teste" para "sei decidir *o que* testar, *como* isolar e *quando desconfiar de um teste verde*".
+> **Escopo:** testes de **unidade e integração** com Jest + React Native Testing Library (RNTL) num app Expo (SDK 57, React 19.2, RNTL 13.3, Jest 29.7, jest-expo 57). **Snapshot** (aula 17) ainda não foi estudado — seção reservada no fim. **E2E** (Maestro/Detox) está fora do escopo.
+> **Como estudar:** leia as Partes 1–6 em ordem (cada uma termina em **Fixe**, as regras de bolso). Depois consolide com a Parte 7 (bugs reais que os testes acharam) e a Parte 8 (playbook, checklist, perguntas, exercícios). *Medido/verificado* = executado neste projeto; *raciocínio* = inferência, sempre sinalizada.
+> Complementa [arquitetura-frontend.md](arquitetura-frontend.md) (por que o app é testável) e [auth-forms.md](auth-forms.md) (os fluxos que aqui são testados).
 
 ## Índice
 
-1. [Fundamentos: a pirâmide de testes em mobile](#1-fundamentos-a-pirâmide-de-testes-em-mobile)
-2. [Jest: setup resiliente, com ou sem projeto legado](#2-jest-setup-resiliente-com-ou-sem-projeto-legado)
-3. [React Native Testing Library: testar como o usuário usa](#3-react-native-testing-library-testar-como-o-usuário-usa)
-4. [Interação: `fireEvent` vs. `userEvent`, e fake timers](#4-interação-fireevent-vs-userevent-e-fake-timers)
-5. [Render customizado: injetando os mesmos Providers da produção](#5-render-customizado-injetando-os-mesmos-providers-da-produção)
-6. [Testando hooks e mocks com Jest](#6-testando-hooks-e-mocks-com-jest)
-7. [Cobertura de código: o que o número não diz](#7-cobertura-de-código-o-que-o-número-não-diz)
-8. [Teste de componente real: formulário, estilo e erro](#8-teste-de-componente-real-formulário-estilo-e-erro)
-9. [Testes de integração: telas inteiras via Expo Router](#9-testes-de-integração-telas-inteiras-via-expo-router)
-10. [Mockando o Repository: erro, loading e dados](#10-mockando-o-repository-erro-loading-e-dados)
-11. [Mocks globais](#11-mocks-globais)
-12. [Snapshot testing](#12-snapshot-testing)
-13. [Mapa aula → conceito](#13-mapa-aula--conceito)
-14. [Glossário](#glossário)
+0. [As 5 ideias que sustentam tudo](#0-as-5-ideias-que-sustentam-tudo)
+1. [Base: por que o app é testável, setup e anatomia](#parte-1--base-por-que-o-app-é-testável-setup-e-anatomia)
+2. [Queries: como achar elementos](#parte-2--queries-como-achar-elementos)
+3. [Interação, assíncrono e tempo](#parte-3--interação-assíncrono-e-tempo)
+4. [Testes de unidade: fronteira, hooks, formulários e mocks](#parte-4--testes-de-unidade-fronteira-hooks-formulários-e-mocks)
+5. [Testes de integração: o app inteiro com infra fake](#parte-5--testes-de-integração-o-app-inteiro-com-infra-fake)
+6. [Qualidade do conjunto: cobertura, depuração e o verde que engana](#parte-6--qualidade-do-conjunto-cobertura-depuração-e-o-verde-que-engana)
+7. [Casos reais: os bugs que os testes acharam](#parte-7--casos-reais-os-bugs-que-os-testes-acharam)
+8. [Fixação: playbook, checklist, perguntas e exercícios](#parte-8--fixação)
+9. [Snapshot (a estudar)](#snapshot-a-estudar) · [Glossário](#glossário) · [Mapa aula → seção](#mapa-aula--seção)
 
 ---
 
-## 1. Fundamentos: a pirâmide de testes em mobile
+## 0. As 5 ideias que sustentam tudo
 
-**Três camadas, granularidades diferentes, cada uma paga um tipo de confiança diferente:**
+1. **Teste como o usuário usa.** Afirme o que aparece na tela e o que o usuário consegue fazer — nunca estado interno. Estado interno muda em refatoração sem o comportamento mudar; o teste quebra por motivo errado.
+2. **Isole o que sai do processo, por injeção.** Rede, storage nativo, ícones, fontes: troque a *implementação* por um fake pela **mesma porta** (Provider) que o app já usa. O código sob teste não muda.
+3. **Teste na fronteira da unidade.** Unitário afirma só o que cruza o contrato do componente/hook (props, callbacks, retorno). O que depende de um colaborador (mutation, toast, navegação) é integração.
+4. **Um teste que nunca falhou não é confiável.** Quebre-o de propósito ao menos uma vez; desconfie de asserção vazia.
+5. **Verde ≠ correto.** Cobertura, `jest.mock`, fakes mais permissivos que o real e o fato de o Jest não checar tipos produzem verde falso. Saiba onde cada um engana (Parte 6).
 
-| Camada | O que exercita | Velocidade | Ferramenta típica em RN |
-|---|---|---|---|
-| Unitário | Uma função/hook/componente isolado | Muito rápido (ms) | Jest |
-| Integração | Vários componentes/hooks juntos, simulando uma tela inteira | Rápido (ainda em Node, sem device) | Jest + React Native Testing Library (RNTL) |
-| E2E | O app de verdade, rodando num simulador/device | Lento (segundos a minutos) | Detox, Maestro — **fora do escopo deste módulo** |
+| Camada | Prova | **Não** prova | Ferramenta | Custo |
+|---|---|---|---|---|
+| Unitário | O contrato de uma peça isolada | Que as peças funcionam juntas | Jest + RNTL | ms |
+| Integração | Um fluxo com peças reais e infra fake | O comportamento da infra real (rede, nativo) | Jest + RNTL + `renderRouter` | centenas de ms |
+| E2E *(fora do escopo)* | O app real num device | — | Maestro, Detox | segundos–minutos |
 
-O módulo cobre unitário e integração — as duas camadas de baixo da pirâmide, que rodam em Node (sem simulador, sem device) e por isso são o que se roda em CI a cada commit. E2E é outra ferramenta, outro processo, geralmente reservado pra poucos fluxos críticos, e não aparece nas aulas listadas.
+Unitário e integração rodam em **Node, sem simulador** — por isso rodam a cada commit, no CI.
 
-### O princípio que guia RNTL, e que vale entender antes de ver a primeira query
+---
 
-> "Quanto mais seu teste se parece com a forma como o software é usado, mais confiança ele te dá." — princípio da família Testing Library (Kent C. Dodds), o mesmo em React (web), React Native e Vue.
+# Parte 1 — Base: por que o app é testável, setup e anatomia
 
-Na prática: testar **o que aparece na tela e o que o usuário consegue fazer** (texto visível, campo preenchível, botão pressionável) — nunca o estado interno de um componente (`wrapper.state()`, `instance()`), porque estado interno muda com refatoração mesmo quando o comportamento não muda, e o teste quebra por um motivo errado. Esse princípio único explica quase todas as decisões de API do RNTL que as próximas aulas vão mostrar (queries por texto/role/label, não por classe interna).
-
-### Por que este projeto especificamente está pronto pra ser testado
-
-As duas aulas anteriores não foram só sobre arquitetura — foram, na prática, uma preparação pra este módulo. O motivo:
+## 1.1 Testabilidade vem da arquitetura, não do framework de teste
 
 ```ts
-// useCityFindAll não importa Supabase nem AsyncStorage — importa uma abstração
+// não importa Supabase nem AsyncStorage — importa uma abstração injetada
 export function useCityFindAll(filters: CityFindAllFilters) {
-  const { city } = useRepository(); // injetado via Context
-  return useAppQuery(() => city.findAll(filters));
+  const { city } = useRepository();           // vem do Context (porta)
+  return useAppQuery(() => city.findAll(filters), [filters.name, filters.categoryId]);
 }
 ```
 
-Porque `useCityFindAll`, `useAuthSignIn` e companhia dependem de `useRepository()` (uma interface injetada via Context), um teste pode envolver o componente no **mesmo** `RepositoryProvider` usado em produção, só que com um repositório fake em vez do `SupabaseCityRepository` real — sem rede, sem banco, determinístico, rápido. Essa é exatamente a promessa feita lá no módulo de arquitetura ("Repository facilita teste, mas por causa do DIP, não por mágica") — agora é a hora de cobrar essa dívida. Vale reler a seção 3 do `arquitetura-frontend.md` com essa lente: cada porta (`Repositories`, `IFeedbackService`, `IStorage`, `IAuthRepository`) construída nos dois módulos anteriores é um ponto onde este módulo vai plugar uma implementação fake.
+Como o hook depende de uma **interface injetada**, o teste monta o **mesmo Provider** da produção com um fake. Sem DI, a alternativa é `jest.mock` do módulo concreto — mais frágil (preso ao caminho, perde o resto do módulo).
 
-**Consequência prática pra guardar:** um componente/hook que importa uma implementação concreta direto (sem passar por uma interface injetada) é mais difícil de testar sem rede/mock manual de módulo (`jest.mock` no arquivo inteiro). Um componente que só depende de uma abstração injetada é testável trocando o `value` do Provider — o mesmo mecanismo do Composition Root, agora usado a favor do teste em vez da produção.
-
-## 2. Jest: setup resiliente, com ou sem projeto legado
-
-Fonte: [docs.expo.dev — Unit testing](https://docs.expo.dev/develop/unit-testing/). Em Expo o setup é deliberadamente pequeno — a maior parte do trabalho já vem embutida no preset. O que muda de verdade, com base real do projeto:
-
-```json
-// package.json
-"scripts": { "test": "jest --watchAll --verbose" },
-"jest": { "preset": "jest-expo" }
-```
-```json
-// tsconfig.json
-"compilerOptions": { "types": ["jest"] }
-```
-
-**Por que cada peça existe, não só o que copiar:**
-- `jest-expo` é um preset que **mocka a parte nativa do SDK da Expo** — sem ele, qualquer teste que toque um módulo nativo (câmera, storage, fontes) quebraria tentando rodar código nativo dentro do Node, onde não existe device nenhum. É o que torna possível rodar teste sem simulador.
-- `types: ["jest"]` no `tsconfig.json` existe porque `test`/`expect`/`describe` são globais que o Jest injeta em runtime — sem declarar o tipo, o TypeScript (e o editor) não sabe que essas globais existem e acusa erro de "não definido", mesmo o teste rodando normalmente. É papelada de tipo, não de execução.
-
-### Greenfield vs. projeto existente: o checklist muda
-
-Instalar (via `npx expo install`, não `yarn add`/`npm i` direto — ver por quê abaixo):
-```
-npx expo install jest-expo jest @types/jest --dev
-npx expo install @testing-library/react-native --dev
-```
-Isso é o suficiente pra um projeto **nascendo com testes**. Um projeto que já existe há tempo, com dependências acumuladas, tem três pontos de atenção que só aparecem quando o teste toca código de verdade — não no `example.test.ts` inicial:
-
-1. **Versão do `jest-expo` presa à versão do Expo SDK, não à última do npm.** Este projeto está em `expo: ~53.0.27` e instalou `jest-expo: ~53.0.14` — o número `53` não é coincidência, é obrigatório: o preset mocka o SDK de uma versão específica, e uma versão de `jest-expo` fora de linha com o SDK instalado mocka a coisa errada. **Use sempre `npx expo install`** em vez de instalar a lib direto — é o mesmo motivo de qualquer outra dependência Expo (já registrado no `CLAUDE.md` deste projeto): o `expo install` resolve pela versão compatível com o SDK pinado, não pela última tag do pacote.
-
-2. **`react-test-renderer` pode já não ser necessário — e pode até conflitar.** A própria doc do Expo, hoje, diz que `@testing-library/react-native` "substitui o `react-test-renderer` porque `react-test-renderer` não suporta React 19+". Achado real neste projeto: o `package.json` instalou os dois — `@testing-library/react-native@^13.2.0` **e** `react-test-renderer@19.0.0` —, mesmo o projeto já estando em `react: 19.0.0`. Não é necessariamente quebrado (pode sobreviver como peer dependency de outra coisa na cadeia), mas é exatamente o tipo de dependência que vale revisitar e potencialmente remover num projeto existente: **numa base em React 19+, parta do princípio de que só o RNTL é necessário, e só adicione `react-test-renderer` se algo pedir explicitamente por ele.**
-
-3. **`transformIgnorePatterns` é o gotcha que só aparece com dependências de verdade.** Por padrão, Jest não transpila nada dentro de `node_modules` — o preset `jest-expo` já libera as libs do próprio ecossistema Expo/RN, mas uma lib de terceiros publicada sem transpilar (ESM puro, JSX cru) vai estourar `SyntaxError: Cannot use import statement outside a module` no meio de um stack trace que parece bug seu. Isso não aparece com o `example.test.ts` (zero import de RN) — aparece na primeira vez que um teste importa um componente que puxa algo como `react-native-maps`/`react-native-webview` por trás. Neste projeto ainda não foi necessário configurar (nenhum teste real ainda importa esses módulos), mas é o primeiro lugar a olhar quando um teste novo falhar com esse erro específico — a correção é estender `transformIgnorePatterns`, não reescrever o teste.
-
-### Descoberta de arquivo: convenção implícita, vale saber que existe
-
-`src/__tests__/example.test.ts` foi reconhecido pelo Jest sem nenhuma configuração adicional — `testMatch` do Jest já cobre por padrão qualquer pasta `__tests__/` e qualquer arquivo `*.test.ts(x)`/`*.spec.ts(x)`, em qualquer lugar da árvore. É mágica implícita que vale conhecer antes de precisar depurar "por que meu teste não roda" — geralmente é nome de arquivo ou de pasta fora da convenção, não configuração quebrada.
-
-## 3. React Native Testing Library: testar como o usuário usa
-
-```tsx
-describe('Component', () => {
-  test("should display the label when is not loading", () => {
-    render(<Component label="hello world" loading={false} />);
-    expect(screen.getByText('hello world')).toBeOnTheScreen();
-  });
-
-  it("should display the loading message when is loading", () => {
-    render(<Component label="hello world" loading={true} />);
-    expect(screen.getByText(/Is loading..../i)).toBeOnTheScreen();
-  });
-});
-```
-
-**`describe`/`test`/`it`:** `describe` só agrupa testes relacionados (aparecem juntos no relatório, podem compartilhar `beforeEach`/`afterEach`). `test` e `it` são **o mesmo método, dois nomes** — `it` existe pra ler como frase ("it should display the label..."), sem nenhuma diferença de comportamento. Este arquivo usa os dois no mesmo `describe` (`test` no primeiro, `it` no segundo) — funciona, mas o ideal é escolher um estilo por projeto e manter consistente; misturar é ruído, não um erro.
-
-**`screen`, o seletor novo desta aula:** antes dele, toda query vinha do retorno de `render()` — `const { getByText } = render(<Component />)`. `screen` (o mesmo conceito do Testing Library na web) é um objeto global que já aponta pra árvore renderizada **mais recente** no teste — `render()` a registra por baixo dos panos, e daí em diante qualquer `screen.getByText(...)` consulta ela, sem precisar carregar o retorno de `render` pra cada assert. Menos boilerplate quando há várias verificações no mesmo teste.
-
-### `getByText` com string exata vs. regex — o ponto central da aula
-
-`screen.getByText('hello world')` exige **match exato**, char a char, sensível a maiúsculas. `screen.getByText(/Is loading..../i)` troca isso por um padrão: o `i` no fim ignora maiúsculas/minúsculas, e o `RegExp` no lugar da string é uma forma de matcher que o Testing Library aceita nativamente (`string | RegExp | function`, mesma API na versão web).
-
-**Por que regex faz sentido aqui, e não é só estilo:** o texto real é um estado ("está carregando"), não um valor de negócio que precisa bater exato. Se amanhã o texto virar `"Carregando..."` ou ganhar um espaço a mais, um `getByText('Is loading....')` exato quebra por um motivo que não tem nada a ver com o comportamento testado (o app continua carregando corretamente). Testar com um padrão mais solto — idealmente algo como `/is loading/i`, sem tentar casar a pontuação exata — deixa o teste preso à **substância** (existe uma indicação de loading) e não à redação exata da copy.
-
-> **Pegadinha real neste regex, vale saber pra não repetir:** `/Is loading..../i` tem quatro pontos **sem escapar** — em regex, `.` (sem `\`) significa "qualquer caractere", não "ponto literal". Isso faz o padrão combinar com `"Is loading" + 4 caracteres quaisquer`, não especificamente `"Is loading...."`. Funciona aqui por coincidência (o texto real termina com pontos, que também satisfazem "qualquer caractere"), mas o mesmo regex casaria igual com `"Is loadingXXXX"`. Regra prática: se a intenção é bater um texto que contém `.` de verdade, escape (`\.`); se a intenção é só "contém a palavra loading, não importa a pontuação", um regex mais curto (`/loading/i`) é mais honesto sobre o que está sendo testado.
-
-**Detalhes menores:**
-- `toBeOnTheScreen()` não é um matcher nativo do Jest — vem do `@testing-library/react-native` (via `expect.extend`), e é mais específico que `toBeTruthy()`: confirma que o elemento existe **e** faz parte da árvore atualmente montada.
-- O diff desta aula deixou duas linhas comentadas (`// const element = ...`) logo acima da versão final — sobra de iteração que valeria remover antes de commitar.
-- `fireEvent`/`userEvent` já foram importados neste arquivo mas ainda não usados em nenhum teste — preparação visível pras aulas 4 e 5.
-
-## 4. Interação: `fireEvent` vs. `userEvent`, e fake timers
-
-```tsx
-it("should display the correct count number", () => {
-  render(<Component label="hello world" loading={false} />);
-  expect(screen.getByText(/Pressed:0/)).toBeOnTheScreen();      // Arrange + assert do estado inicial
-  fireEvent.press(screen.getByTestId('label-button'));          // Act
-  expect(screen.getByText(/Pressed:1/)).toBeOnTheScreen();      // Assert do estado final
-});
-```
-
-**Arrange → Act → Assert, com assert dos dois lados da mudança:** checar o estado antes *e* depois da interação (não só depois) é o que garante que o teste está testando a transição, não só um valor final que poderia já estar ali por outro motivo. "Colocar mais de um `expect`" não é redundância — é o que prova que o clique *causou* a mudança de `Pressed:0` pra `Pressed:1`, e não que o componente já nasceu em `1`.
-
-**O que `fireEvent` faz por baixo dos panos, e por que isso importa:** `fireEvent.press(el)` chama a prop `onPress` do elemento **diretamente** — não simula a sequência real de toque que um dedo produziria (`onPressIn` → delay → `onPressOut` → `onPress`). Pra testar contagem de clique isso é suficiente; pra qualquer lógica amarrada aos eventos intermediários (feedback visual de "pressionando", debounce de toques rápidos, gestos), `fireEvent` não é fiel o bastante — é exatamente a lacuna que `userEvent` (aula 5) fecha, simulando a sequência completa em vez de ir direto ao handler final.
-
-### Fazer o teste falhar de propósito — o exercício mais importante desta aula
-
-Antes de confiar num teste que passa, vale **quebrá-lo de propósito** uma vez: trocar `Pressed:1` por `Pressed:2` no assert, ou comentar o `setCount` no componente, rodar o teste, e confirmar que ele **falha** com uma mensagem que faz sentido. Se um teste "passa" mesmo com a lógica errada, ele é um falso positivo — pior que não ter teste nenhum, porque dá a sensação de cobertura sem entregar nenhuma. Isso não é uma etapa opcional de aprendizado, é uma disciplina pra manter no dia a dia: todo teste novo deveria, em algum momento antes de ser commitado, ser visto falhando pelo menos uma vez.
-
-### `testID`: por que apareceu justo aqui, e por que é o último recurso
-
-```tsx
-<Pressable testID="label-button" onPress={() => setCount((p) => p + 1)}>
-  <Text>{label}</Text>
-</Pressable>
-```
-
-`getByTestId` só entrou em cena quando o teste precisou **disparar** uma interação, não só **ler** um texto. `fireEvent` dispara o handler do elemento exato que você passa a ele — e o `onPress` está no `Pressable`, não no `Text` que `getByText('hello world')` retorna. Sem `testID`, não haveria como pegar uma referência ao `Pressable` diretamente por texto ou role, porque ele não expõe nenhum dos dois (não tem `accessibilityRole`, o texto pertence ao filho).
-
-Na ordem de prioridade do Testing Library (a mesma na versão web e na RNTL — por role, depois label, depois texto, ... `testID` por último), `testID` é o recurso de quando nenhuma consulta "como o usuário enxerga" resolve o elemento. Aqui resolveria diferente: dar `accessibilityRole="button"` ao `Pressable` e trocar por `getByRole('button', { name: 'hello world' })` — mais alinhado ao princípio da aula 1 ("testar como o usuário usa"), e sem precisar de nenhum atributo que só existe pro teste.
-
-**Nota sobre o regex desta aula:** `/Pressed:0/` e `/Pressed:1/`, sem `i` e sem nenhum caractere especial pra escapar — diferente do regex da aula 3, aqui não tem pegadinha, é regex por hábito/consistência com o teste anterior, não por necessidade (uma string exata `'Pressed:0'` funcionaria igual, já que o texto renderizado é exatamente isso). Vale reconhecer a diferença: às vezes regex resolve um problema real (aula 3), às vezes é só estilo — e tudo bem, contanto que se saiba qual dos dois casos é.
-
-### `userEvent`: a simulação de verdade, e por que ela precisa de fake timers
-
-```tsx
-describe('Component', () => {
-  beforeAll(() => { jest.useFakeTimers(); });
-  afterAll(() => { jest.useRealTimers(); });
-
-  it("should display reset the count when press the reset text 2", async () => {
-    render(<Component label="Hello World" loading={false} />);
-    expect(screen.getByText(/Pressed:0/i)).toBeOnTheScreen();
-
-    const user = userEvent.setup();
-    await user.press(screen.getByText("Hello World"));
-    await user.press(screen.getByText("Hello World"));
-    await user.press(screen.getByText("Hello World"));
-    await user.press(screen.getByText("Hello World"));
-
-    expect(screen.getByText(/Pressed:4/i)).toBeOnTheScreen();
-  });
-});
-```
-
-**Mecanismo:** `userEvent.press` (por isso o `await`) simula a sequência real de eventos nativos que um toque produz — não só chama `onPress`, como `fireEvent`. Essa simulação usa temporizadores internos (delays entre os eventos da sequência), e é exatamente por isso que fake timers aparecem **na mesma aula**: sem `jest.useFakeTimers()`, esses delays seriam tempo real (o teste ficaria mais lento, ou preso esperando timers que nunca disparam no ambiente de teste). Com o relógio fake, o Jest controla/avança esse tempo internamente, e a simulação roda determinística e rápida. `fireEvent` não precisa disso porque não tem delay nenhum — vai direto ao handler.
-
-**`fireEvent` e `userEvent` não competem — coexistem, com propósitos diferentes.** `fireEvent` continua válido pra testar a transição de estado em si (mais simples, síncrono); `userEvent` vale quando a fidelidade da sequência de interação importa. Trocar `fireEvent` por `userEvent` em todo teste não é upgrade automático — é mais setup (`await`, timers) por uma fidelidade que nem todo teste precisa.
-
-**Sobre "só funciona em componentes base" — precisão que vale ajustar:** não é uma lista fechada de nomes (`Pressable`, `Text`); é que `userEvent` opera sobre o **elemento host/nativo** no fundo da árvore renderizada — o nó real que o RN sabe como receber toque. Qualquer componente customizado (um `Button` de design system, por exemplo) funciona normalmente com `userEvent`, contanto que ele acabe renderizando, no fim das contas, um primitivo nativo interativo (`Pressable`/`View`/`TextInput`) — o que é o caso de praticamente todo componente de UI em RN. A API é nova (chegou bem depois do `fireEvent`, espelhando o `@testing-library/user-event` da versão web) e cada método dela é específico do primitivo que simula — `.press()` faz sentido num elemento pressionável, `.type()` só faz sentido num `TextInput`.
-
-**Escopo de `beforeAll`/`afterAll`:** os fake timers aqui valem pro `describe` **inteiro**, não só pro teste que usa `userEvent` — os testes anteriores com `fireEvent` também rodam sob timer fake (inofensivo pra eles, já que não usam timer nenhum). Diferente de `beforeEach`/`afterEach` (que rodariam a cada teste), `beforeAll`/`afterAll` rodam uma vez só, no início/fim de todo o arquivo — se um teste *depois* deste precisasse de timers reais, precisaria de seu próprio `jest.useRealTimers()` explícito, porque o `afterAll` só desfaz no final.
-
-> **Achado real, tipo "falso positivo" ao contrário — nome de teste que não corresponde ao que ele testa:** `it("should display reset the count when press the reset text 2", ...)` descreve um reset ao pressionar o texto "reset" — mas o corpo do teste pressiona o **label** ("Hello World") quatro vezes e verifica a contagem **subindo** até 4, nunca toca no texto de reset. O `" 2"` no final sugere um nome duplicado copiado às pressas. O teste em si está correto (verifica acúmulo real de cliques) — o problema é só a descrição, mas isso importa: quando esse teste falhar um dia, quem ler a mensagem vai procurar bug no reset, não na contagem — o mesmo tipo de dano da aula 4 (confiar em algo que não é verdade), só que na legibilidade do teste, não na lógica dele.
-
-## 5. Render customizado: injetando os mesmos Providers da produção
-
-**Padrão oficial da própria Testing Library (web e RN têm a mesma receita na doc), não invenção deste projeto:**
-
-```tsx
-// src/test-utils/renderComponent.tsx
-const AllTheProviders = ({ children }: React.PropsWithChildren) => (
-  <ThemeProvider theme={theme}>{children}</ThemeProvider>
-);
-
-export const renderComponent = (
-  component: ReactElement,
-  options?: Omit<RenderOptions, "wrapper">
-) => render(component, { wrapper: AllTheProviders, ...options });
-```
-
-**O mecanismo, agnóstico de qualquer projeto:** todo `render` de Testing Library (web ou RNTL) aceita uma opção `wrapper` — um componente que envolve a UI testada antes de montar. Um render customizado nada mais é do que uma função que **já fixa esse `wrapper`** com todos os Providers que a árvore real usa (tema, i18n, store, autenticação, o que for), pra cada arquivo de teste não precisar reescrever `<ThemeProvider><QueryClientProvider><AuthProvider>...` toda vez que testar um componente que depende de algum desses contextos.
-
-**`AllTheProviders` cresce conforme os testes exigem, não antecipado.** Hoje só tem `ThemeProvider`, porque `Button`/`Text` só dependem de tema. Quando a suíte passar a testar algo que usa `useRepository()`/`useFeedbackService()`/`useAuth()`, os Providers correspondentes entram na mesma função — um único lugar centraliza "quais contextos qualquer componente pode precisar em teste", espelhando o Composition Root de produção (mesma ideia, papel diferente: lá monta o app real, aqui monta o app de teste).
-
-**`Omit<RenderOptions, "wrapper">` — travar de propósito uma opção da lib de terceiro:** em vez de redeclarar as opções de `render` à mão, o tipo reaproveita `RenderOptions` da própria lib e remove só o campo que este projeto já decidiu (`wrapper`) — quem chama `renderComponent` pode passar qualquer outra opção do `render` original, mas não pode sobrescrever os Providers por acidente. É uma técnica de TS reaproveitável em qualquer wrapper de API de terceiro: pegar o tipo da lib, tirar só o que você está assumindo a responsabilidade de decidir.
-
-### `jest.fn()` — testando se algo foi chamado, não o que apareceu na tela
-
-```tsx
-it("should NOT call the onPress function when it is disabled", () => {
-  const onPressFn = jest.fn();
-  renderComponent(<Button title="button title" onPress={onPressFn} disabled />);
-  fireEvent.press(screen.getByText("button title"));
-  expect(onPressFn).not.toHaveBeenCalled();
-});
-```
-
-Diferente de todos os testes anteriores (que verificavam texto/estado renderizado), aqui a asserção é sobre **uma função ter sido chamada ou não** — `jest.fn()` cria uma função "espiã" que registra cada chamada, permitindo perguntar depois "isso rodou?", "quantas vezes?", "com quais argumentos?". É outro estilo de prova, complementar ao de tela: às vezes o que importa não é o que renderizou, é se um callback foi ou não disparado.
-
-**O que esse teste específico prova, e o que ele não prova:** `disabled` chega em `Button` só porque `ButtonProps` estende as props nativas do `TouchableOpacity` por baixo — o componente não tem nenhuma lógica própria de "se desabilitado, não chama". Quem trata isso é o `TouchableOpacity` do React Native, de graça, assim que a prop é repassada adiante. O teste é válido (garante que ninguém quebre esse repasse numa refatoração futura), mas vale reconhecer a diferença: ele testa **fiação** (a prop chega até o componente nativo certo), não uma **regra de negócio própria** — não existe, por exemplo, nenhum feedback visual de "desabilitado" sendo testado aqui (nem implementado ainda). Duas confianças diferentes, ambas legítimas, mas não a mesma coisa.
-
-### Achado real: nome de pasta inconsistente que só não quebra por sorte de regra
-
-Os testes de `Button`/`Text` ficam em `src/ui/components/__test__/` — **singular**. Os testes anteriores ficam em `src/__tests__/` — **plural**. O `testMatch` padrão do Jest tem duas regras independentes: uma exige literalmente uma pasta `__tests__/` (plural); a outra aceita qualquer arquivo terminado em `.test.ts(x)`, em qualquer pasta. Os arquivos em `__test__/` (singular) só são encontrados pela **segunda** regra (o sufixo do nome do arquivo), não pela primeira — funcionam, mas por um caminho diferente do resto do projeto. Não é um bug (nada quebra agora), mas é o tipo de inconsistência que compensa padronizar antes que alguém, um dia, crie um arquivo sem o sufixo `.test.` dentro de `__test__/` esperando que a pasta sozinha baste — e ele simplesmente não vai rodar, silenciosamente.
-
-**Evolução natural pra quem quiser ir além do que este projeto fez:** o padrão mais completo de "custom render" (documentado assim na própria Testing Library) não só define um `render` customizado — também **reexporta tudo** da lib de teste a partir do mesmo módulo (`export * from '@testing-library/react-native'`), pra nenhum arquivo de teste precisar importar de dois lugares (o `render` customizado de um lado, `screen`/`fireEvent` do outro) e correr o risco de alguém importar o `render` cru por engano. Este projeto optou pela versão mais simples (uma função a mais, chamada com outro nome) — funciona igual, só exige mais disciplina de quem escreve o teste pra lembrar de usar `renderComponent` em vez do `render` direto quando o componente precisa de Provider.
-
-## 6. Testando hooks e mocks com Jest
-
-```ts
-jest.mock("@/src/infra/repositories/RepositoryProvider", () => ({
-  useRepository: () => ({ auth: { signIn: mockSignIn } }),
-}));
-
-const { result } = renderHook(() => useAuthSignIn());
-await act(async () => {
-  await result.current.mutate({ email: "...", password: "..." });
-});
-expect(mockSignIn).toHaveBeenCalledWith("...", "...");
-```
-
-**`renderHook`:** testa um hook isolado, sem precisar de um componente visual em volta — monta o hook, expõe o retorno em `result.current`, e cada chamada que muda estado precisa ficar dentro de `act(...)` (é o que faz o React "processar" a atualização antes do próximo assert rodar).
-
-**`jest.mock(caminho, fabrica)` troca o módulo inteiro que o hook importa**, não só uma função dele. Diferente do render customizado (seção 5), que injeta uma implementação via Provider igual à produção faria, aqui o teste intercepta a própria importação — útil quando o hook não recebe a dependência por parâmetro/Context de forma fácil de trocar em teste, ou quando o objetivo é isolar 100% de qualquer efeito colateral real (chamada de rede, storage) sem precisar montar Provider nenhum.
-
-### Um bug real, e o porquê exato por trás dele
-
-Erro reportado:
-```
-Cannot find module '@src/infra/repositories/RepositoryProvider' from '...useAuthSignIn.test.ts'
-```
-
-Causa: `@src/...` (sem barra depois do `@`) em vez de `@/src/...` — o alias configurado no projeto é `"@/*": ["./*"]` (`tsconfig.json`), e todo o resto do código usa exatamente esse prefixo com a barra.
-
-**O porquê, não só o "troque a string":** este projeto não tem `moduleNameMapper` no config do Jest, e mesmo assim `@/src/...` resolve normalmente em outros arquivos de teste — porque `babel-preset-expo` lê os `paths` do `tsconfig.json` e faz a troca de prefixo **em tempo de transformação**, antes do resolvedor de módulos do Jest sequer ver o caminho. Essa substituição é literal: reconhece o prefixo `@/` exatamente como está escrito, e troca por `./`. `@src/...` não bate com esse prefixo — passa direto, sem ser tocado, e cai no resolvedor padrão do Node, que tenta achar um pacote chamado `@src` dentro de `node_modules`. Não existe, daí o "Cannot find module". Não é bug de configuração do Jest — é um typo que escapa da regra de substituição por um caractere.
-
-**A parte que vale mais a lição:** corrigir esse `jest.mock` sozinho **não** era o bug inteiro. O mesmo arquivo tinha mais dois caminhos errados nos outros dois `jest.mock`:
-- `@/src/infra/feedbackService/FeedbackProvider` → o arquivo real está em `@/src/infra/services/feedback/FeedbackProvider` (pasta errada).
-- `../../AuthContext` → de dentro de `src/domain/Auth/__test__/`, `AuthContext.tsx` está só **uma** pasta acima, não duas (`../AuthContext`).
-
-O motivo de só o primeiro erro aparecer: as três chamadas de `jest.mock` são processadas (hoisted) antes de qualquer teste rodar, em ordem — a primeira que falha interrompe o arquivo inteiro ali, e as outras duas nunca chegam a ser avaliadas. **Regra prática pra depurar `jest.mock` com vários caminhos:** corrigir um erro de módulo não garante que o arquivo está livre de outros iguais — rode de novo depois de cada correção, não assuma que "resolveu o erro" significa "resolveu o arquivo".
-
-## 7. Cobertura de código: o que o número não diz
-
-```
-npx jest --coverage
-```
-```
-File                                | % Stmts | % Branch | % Funcs | % Lines
-useAuthSignIn.ts                    |     100 |      100 |     100 |     100
-FeedbackProvider.tsx                |       0 |        0 |       0 |       0
-IFeedbackService.ts                 |       0 |        0 |       0 |       0
-adapters/Alert/AlertFeedback.tsx    |       0 |      100 |       0 |       0
-adapters/Toast/ToastFeedback.ts     |       0 |      100 |       0 |       0
-```
-
-`useAuthSignIn.test.ts` passa, com dois cenários (sucesso e erro), e o hook que ele testa direto mostra 100%. Mas o `FeedbackProvider` e todos os adapters de `IFeedbackService` aparecem em **0%** — não porque ninguém pensou neles, mas porque o teste faz `jest.mock("@/src/infra/services/feedback/FeedbackProvider", ...)`: o módulo real nunca roda, só o mock roda. Coverage conta **linha executada**, não "funcionalidade coberta" — um módulo inteiramente substituído por mock nunca vai aparecer coberto, por mais que o comportamento dele esteja sendo simulado corretamente pelo mock.
-
-### Dois motivos pra um arquivo aparecer em 0%, e são coisas diferentes
-
-1. **Ninguém escreveu teste pra ele ainda** (`useAuthSignOut.ts`, `useAuthSignUp.ts`, `useAuthSendResetPasswordEmail.ts` — 0% real, sem mock envolvido). Leitura direta: falta teste.
-2. **Foi mockado por um teste que testa outra coisa** (`FeedbackProvider`, `AlertFeedback`, `ToastFeedback` — 0% porque `useAuthSignIn.test.ts` os substitui de propósito). Leitura errada: "falta teste de feedback". Leitura certa: falta um teste **dedicado** aos adapters de feedback (ex.: confirmar que `AlertFeedback.send` chama `Alert.alert` com os argumentos certos) — coisa que o teste de `useAuthSignIn` nunca teve a intenção de cobrir, porque isolar a unidade é o objetivo dele.
-
-**A lição central, agnóstica de qualquer stack:** o número de coverage é um mapa de "o que rodou durante os testes", não de "o que está correto" nem de "o que está integrado de ponta a ponta". Dá pra ter 100% de cobertura numa função com um `expect(true).toBe(true)` solto, e 0% numa peça que já está perfeitamente exercitada por outro conjunto de testes (integração, E2E) que o relatório de coverage daquele arquivo isolado não enxerga. Coverage serve pra **achar buracos óbvios** (arquivo sem teste nenhum) — não serve pra provar corretude, e um número alto não substitui ler quais asserções de fato existem.
-
-### `beforeEach(() => jest.clearAllMocks())` — por que os mocks vazam entre testes sem isso
-
-```ts
-const mockSendFeedback = jest.fn(); // criado uma vez, no escopo do arquivo
-
-beforeEach(() => {
-  jest.clearAllMocks(); // zera o histórico de chamadas antes de CADA teste
-});
-```
-
-`mockSignIn`/`mockSendFeedback`/`mockSaveAuthUser` são criados **uma vez**, fora de qualquer `it`/`test` — o mesmo `jest.fn()` é reaproveitado no arquivo inteiro. Sem limpar entre testes, o histórico de chamadas (`toHaveBeenCalledWith`, contagem de chamadas) do primeiro teste continua ali quando o segundo roda, e um `toHaveBeenCalledTimes(1)` no segundo teste veria 2 chamadas (uma de cada teste) — falha (ou, pior, passa por engano se a asserção não for específica o bastante). `beforeEach` (roda antes de **cada** teste, diferente do `beforeAll` da aula 5, que roda uma vez só) é o que garante isolamento: cada teste começa com um mock "zerado", sem carregar histórico do teste anterior.
-
-**Três primos que fazem coisas parecidas, mas não iguais — vale saber qual usar:**
-- `clearAllMocks()`: zera só o histórico de chamadas (`mock.calls`) — mantém qualquer `mockResolvedValueOnce`/`mockImplementation` já configurado **fora** do próprio teste. É o certo aqui, porque os retornos (`mockResolvedValueOnce`, `mockRejectedValueOnce`) são configurados dentro de cada `it`, não precisam sobreviver entre testes.
-- `resetAllMocks()`: faz o que `clearAllMocks` faz e **também** zera a implementação de volta a um mock vazio — quebraria um fluxo que dependesse de uma implementação padrão configurada uma vez fora dos testes individuais.
-- `restoreAllMocks()`: só importa pra mocks criados com `jest.spyOn` — devolve a implementação **original** (não mockada) da função espionada.
-
-## 8. Teste de componente real: formulário, estilo e erro
-
-```tsx
-it('should submit the form when all fields are filled in correctly', async () => {
-  const onSubmitMock = jest.fn();
-  renderComponent(<SignUpForm onSubmit={onSubmitMock} />);
-
-  fireEvent.changeText(screen.getByTestId('fullname-input'), "Gabriel Jesus");
-  fireEvent.changeText(screen.getByTestId('email-input'), "gabriel.jesus@example.com");
-  fireEvent.changeText(screen.getByTestId('password-input'), "password123");
-  fireEvent.changeText(screen.getByTestId('confirm-password-input'), "password123");
-  fireEvent.press(screen.getByTestId('submit-button'));
-
-  await waitFor(() => {
-    expect(onSubmitMock).toHaveBeenCalledWith(
-      expect.objectContaining({ fullname: "Gabriel Jesus", email: "gabriel.jesus@example.com", password: "password123" }),
-      undefined // ← o comentário original dizia "onInvalid callback"; está errado (ver abaixo)
-    );
-  });
-});
-```
-
-### A fronteira do componente: o conceito central desta aula
-
-A **fronteira** de um componente é o seu contrato de entrada e saída: o que ele recebe (props) e o que ele devolve pra fora (callbacks chamados, o que renderiza). `SignUpForm` recebe `onSubmit` e, quando o usuário preenche tudo certo e aperta o botão, chama `onSubmit` com os dados. **Só isso é o contrato dele.** O teste olha exatamente pra isso — e nada além.
-
-| Dentro da fronteira (teste unitário, esta aula) | Fora da fronteira (teste de integração, aulas 11-14) |
+| Porta do app | O que entra no lugar em teste |
 |---|---|
-| `onSubmit` é chamado com os dados certos | `useAuthSignUp` realmente cadastra o usuário |
-| Campos preenchidos chegam no payload | O toast de sucesso aparece |
-| — | A tela volta pro login (`router.back`) |
-
-Esse recorte espelha a decisão de design da seção 10 do `auth-forms.md` ("formulário como caixa-preta, a tela só conhece `onSubmit`"): o componente foi **desenhado** com uma fronteira estreita, e o teste respeita essa mesma fronteira — não inspeciona o estado interno do React Hook Form nem espera efeitos que quem consome o `onSubmit` produz. Um bom design de fronteira vira, quase de graça, um bom limite de teste.
-
-**O critério portável pra decidir "unitário ou integração":** não é "quantos arquivos o teste toca". É "a asserção atravessa a fronteira do componente e passa a depender da responsabilidade de um colaborador?". `expect(onSubmitMock).toHaveBeenCalled...` não atravessa — o mock é o próprio colaborador, substituído. `expect(screen.getByText('cadastro feito com sucesso'))` atravessaria — dependeria de `useAuthSignUp`, do `FeedbackService` e do `Toast` funcionando juntos, o que é integração por definição.
-
-### `waitFor`: por que o `expect` não pode rodar logo depois do `press`
-
-```tsx
-await waitFor(() => { expect(onSubmitMock).toHaveBeenCalledWith(...) });
-```
-
-`handleSubmit` do React Hook Form é **assíncrono**: no código-fonte dele, antes de chamar o seu `onSubmit` ele faz `await _runSchema()` (roda o resolver do Zod) e só depois `await onValid(fieldValues, e)`. Ou seja, quando `fireEvent.press` retorna, `onSubmit` **ainda não foi chamado** — um `expect` síncrono logo em seguida rodaria cedo demais e falharia, mesmo com o código correto (falso negativo).
-
-`waitFor` re-executa o callback repetidamente até ele parar de lançar erro ou estourar o timeout (por padrão, na ordem de ~1s de limite e ~50ms entre tentativas). **Trade-offs pra guardar:**
-- Um `waitFor` que **falha** só avisa depois do timeout inteiro — uma suíte com muitos testes quebrados fica lenta pra falhar.
-- O callback é executado **várias vezes** — deve conter só asserções, nunca ações com efeito colateral (`fireEvent`, `press`), que se repetiriam a cada tentativa.
-- Quando o que se espera é um **elemento aparecendo**, `await screen.findByText(...)` é o atalho idiomático (um `waitFor` + `getByText` já combinados). `waitFor` com `expect` é a forma certa quando o alvo é um callback/mock, como aqui.
-
-### Achado: o comentário `onInvalid callback` está errado — e a asserção ficou colada num detalhe incidental
-
-O segundo argumento `undefined` não é o `onInvalid` do RHF. Conferido no código do RHF: `SubmitHandler<T> = (data: T, event?: BaseSyntheticEvent) => ...` e a chamada é `await onValid(fieldValues, e)` — o segundo argumento é o **evento do press**. É `undefined` porque `fireEvent.press` chama `onPress` sem objeto de evento. Consequências:
-
-- Num dispositivo real, ou com `userEvent.press` (que gera um evento de verdade), esse argumento seria um objeto — e a asserção quebraria sem nenhuma mudança de comportamento.
-- A asserção está acoplada a um **detalhe de plumbing do framework**, não ao contrato do componente (que é só "os dados").
-
-Mais robusto — afirmar só o que cruza a fronteira, ignorando argumentos incidentais:
-```tsx
-expect(onSubmitMock).toHaveBeenCalledTimes(1);
-expect(onSubmitMock.mock.calls[0][0]).toMatchObject({ fullname: "Gabriel Jesus", /* ... */ });
-```
-
-**`objectContaining` e o quarto campo:** o payload real tem quatro campos (inclui `confirmPassword`; quem reduz pra três é a tela, ver seção 13 do `auth-forms.md`), mas a asserção lista só três. Se alguém deixasse de enviar `confirmPassword`, o teste continuaria verde. É o trade-off clássico: matcher frouxo = menos frágil a mudanças, mas também menos capaz de pegar regressão. Numa fronteira que **é** o contrato, vale perguntar se o payload completo não deveria ser afirmado por inteiro.
-
-### `testID` ×5 em código de produção — e a alternativa que também melhora acessibilidade
-
-Foram adicionados cinco `testID` ao `SignUpForm` só pra o teste achar os elementos. Funciona, mas é o "último recurso" da aula 4, e aqui havia alternativas:
-- `getByPlaceholderText('seu nome completo')` acharia cada input (o placeholder já é repassado ao `TextInput` nativo); `getByText('Criar conta')` acharia o botão.
-- `getByLabelText('Nome completo')` — a opção mais alinhada ao "testar como o usuário usa" — **não funciona hoje**: o `TextInput` do projeto renderiza `label` como um `<Text>` irmão, sem ligá-lo ao input por `accessibilityLabel`.
-
-Isso é uma lacuna de **acessibilidade**, não só de teste: um leitor de tela não anuncia "Nome completo" quando o campo recebe foco, porque nada associa o texto ao input. Passar `accessibilityLabel={label}` ao `RNTextInput` resolveria os dois problemas de uma vez. **Regra geral:** se um elemento não pode ser consultado pelo que o usuário percebe (label, texto, role), um usuário de tecnologia assistiva também não consegue percebê-lo — testabilidade e acessibilidade são, bem frequentemente, o mesmo problema.
-
-### O que este teste não pega: caminho feliz apenas
-
-Só existe o cenário "tudo válido → `onSubmit` chamado". Se o resolver do Zod fosse removido do formulário, esse teste continuaria passando — ele não consegue detectar um formulário permissivo demais. Pra ver este teste falhar (o exercício da aula 4) seria preciso quebrar o fluxo de dados, não a validação. É o teste do caminho **inválido** (senhas diferentes → `onSubmit` **não** chamado + mensagem de erro) que de fato fixa a validação — feito na aula 10, logo abaixo.
-
-**Detalhe:** `fireEvent.changeText` define o valor final de uma vez, sem simular tecla por tecla (`userEvent.type` faria isso, com a mesma ressalva de `await` e fake timers da aula 5).
-
-### Cenário de erro: o teste negativo e como ele precisa ser montado
-
-```tsx
-describe("should NOT submit form", () => {
-  it("when the password and confirm password do not match", async () => {
-    const onSubmitMock = jest.fn();
-    renderComponent(<SignUpForm onSubmit={onSubmitMock} />);
-
-    // tudo válido, EXCETO o campo sob teste
-    fireEvent.changeText(screen.getByTestId("fullname-input"), "Lucas Garcez");
-    fireEvent.changeText(screen.getByTestId("email-input"), "lucas@coffstack.com");
-    fireEvent.changeText(screen.getByTestId("password-input"), "12345678");
-    fireEvent.changeText(screen.getByTestId("confirm-password-input"), "another-password");
-    fireEvent.press(screen.getByTestId("submit-button"));
-
-    expect(await screen.findByText("senhas devem ser iguais"));
-    expect(screen.getByTestId("confirm-password-input-container"))
-      .toHaveStyle({ borderColor: theme.colors.fbErrorSurface });
-    expect(onSubmitMock).not.toHaveBeenCalled();
-  });
-});
-```
-
-**Vermelho antes do verde (a aula 4 aplicada de verdade):** o roteiro da aula é escrever o teste, rodar, **vê-lo falhar**, e só então fazê-lo passar. A falha inicial vem de um motivo concreto e instrutivo: a primeira versão usava `getByText("senhas devem ser iguais")`, que falhou. Passar a mensagem errada de propósito, depois, confirma que o teste passa "pelo motivo certo".
-
-**`getBy*` é síncrono; `findBy*` espera.** A mensagem de erro não existe logo após o `press` — ela só aparece depois que o resolver do Zod termina (a mesma causa do `waitFor` da aula 9: `handleSubmit` do RHF é assíncrono). `getByText` procura uma vez e lança se não achar; `findByText` re-tenta até aparecer ou estourar o timeout. Regra: `getBy` pro que já está na tela; `findBy` pro que aparece depois de trabalho assíncrono; `queryBy` (retorna `null` em vez de lançar) pra afirmar **ausência**.
-
-**Isolar uma variável por teste negativo não é só arrumação — aqui é obrigatório (verificado).** Rodei o mesmo envio com três preenchimentos diferentes:
-
-| Preenchimento | Mensagens exibidas |
-|---|---|
-| `fullname`/`email` **nunca tocados**, senhas diferentes | `campo obrigatório` ×2 — **sem** "senhas devem ser iguais" |
-| `fullname`/`email` tocados porém inválidos (`"a"`, `"x"`) | `nome muito curto`, `email inválido` **e** `senhas devem ser iguais` |
-| Tudo válido, só `confirmPassword` diferente | só `senhas devem ser iguais` |
-
-O motivo está no Zod (conferi no fonte): o `.refine()` do objeto só roda se o parse interno não "abortou" — campo `undefined` gera erro de tipo (fatal, aborta o objeto), enquanto `min()`/`email()` são erros não fatais (o refine ainda roda). Moral pro teste: `undefined` e "string inválida" seguem caminhos diferentes no Zod, e um teste negativo que deixa campos intocados pode nunca chegar na regra que pretendia exercitar. Preencher todo o resto corretamente é o que garante que a falha tem **uma única causa possível**.
-
-**A ordem do `not.toHaveBeenCalled()` é o que o torna significativo (verificado).** Ele aparece depois do `await findByText`. Se estivesse logo após o `press`, passaria **mesmo com dados válidos** — testei: com tudo válido, `expect(onSubmit).not.toHaveBeenCalled()` imediatamente após o `press` passa, e só depois o `waitFor` mostra que `onSubmit` foi chamado. Como a chamada é assíncrona, o "não foi chamado" daquele instante é vazio. **Regra:** uma asserção de "não aconteceu" em fluxo assíncrono só vale **depois** de aguardar algo que prove que o trabalho assíncrono terminou (aqui, a mensagem de erro aparecer). E vale parear com a mensagem específica — sozinho, "não foi chamado" tem muitas causas possíveis.
-
-**`expect(await screen.findByText(...))` sem matcher funciona, mas por acidente de design.** Confirmei: com um texto inexistente a linha falha — porque `findByText` lança quando não acha, não porque o `expect` verifica algo. Um `expect(x)` sem `.toXxx()` não afirma nada; quem lê assume que afirma. `expect(await screen.findByText(...)).toBeOnTheScreen()` diz a intenção e é o que regras como `jest/valid-expect` exigem (o plugin não está instalado neste projeto — hoje nada acusa isso).
-
-### Teste de estilo: `toHaveStyle`, o que ele pega e o que custa
-
-Só afirmar o **texto** do erro não diz **onde** ele aparece. A aula demonstra: trocar o `path` do `.refine()` de `confirmPassword` para `password` faz a mensagem aparecer no campo errado, e o teste de texto continua verde — só a asserção de estilo no container do `confirmPassword` fica vermelha. Voltar o `path` faz passar.
-
-```tsx
-expect(screen.getByTestId("confirm-password-input-container"))
-  .toHaveStyle({ borderColor: theme.colors.fbErrorSurface });
-```
-
-**O mecanismo:** `toHaveStyle` lê o `style` achatado do elemento e compara as propriedades pedidas. Com Restyle, `borderColor="fbErrorSurface"` (token) é resolvido pra um valor real no `View` por baixo — conferi: o estilo achatado tem `borderColor: "#D32F2F"`, e `not.toHaveStyle({ borderColor: "fbErrorSurface" })` passa (o nome do token não aparece). Usar `theme.colors.fbErrorSurface` na asserção amarra o teste ao **token** do design system. Isso detecta **fiação** (o token de erro está aplicado no elemento certo), mas não detecta um valor errado do próprio token — pra isso a asserção seria tautológica.
-
-**A técnica de `testID` composto, e um bug que ela introduziu (verificado).** O `testID` vai pro `RNTextInput`, mas a borda vive no `Box` que o envolve. Em vez de criar uma prop nova por elemento, o `TextInput` deriva `testID={`${testID}-container`}` a partir da prop que já existia — um padrão pragmático e reaproveitável. Restrição: `getByTestId` lança se houver mais de um elemento com o mesmo id.
-
-O problema: quando quem usa `TextInput` **não** passa `testID` (sign-in e reset-password não passam), o template vira a string literal `"undefined-container"` — renderizei dois `TextInput` sem `testID` e `getAllByTestId("undefined-container")` achou **dois** elementos com o mesmo id, em código de produção. Correção: `testID={testID ? `${testID}-container` : undefined}`. Lição geral: ao derivar um atributo de outro opcional, trate a ausência — interpolar um `undefined` não falha, vira texto.
-
-**O trade-off, nas palavras da própria aula:** não abusar de teste de estilo — estilo muda o tempo todo e raramente é o que mais importa. O que vale cobrir primeiro é comportamento: o formulário **não** submete dado inválido; com erro, a chamada à API **não** é feita. Teste de estilo se justifica quando o estado visual **carrega significado** (indicar qual campo errou), e mesmo aí existe uma alternativa menos frágil que afirmar cor: afirmar **estrutura** com `within(elemento)` (a mensagem está dentro do bloco do campo certo). Aqui exigiria um `testID` no bloco externo, porque o texto de erro é irmão do container da borda, não filho dele.
-
-### Organização: `describe` que viram frase
-
-`describe("should NOT submit form")` + `it("when the email is invalid")` compõem a frase no relatório ("should NOT submit form when the email is invalid") — descrever **uma regra** e deixar cada `it` ser uma condição. Detalhe a ajustar neste arquivo: o segundo `describe` é irmão do `<SignUpForm />` (nível raiz), então no relatório os negativos perdem o nome do componente; aninhá-lo dentro de `<SignUpForm />` dá a hierarquia completa.
-
-## 9. Testes de integração: telas inteiras via Expo Router
-
-Integração = **várias partes reais trabalhando juntas; só o que sai do processo (rede, armazenamento nativo) é trocado.** O fluxo de auth foi escolhido por reunir quase tudo que vale integrar: formulário, caso de uso real (`useAuthSignIn`, sem mock) e navegação.
-
-| | Unitário | Integração |
-|---|---|---|
-| Escopo | Um hook, componente ou função | Um fluxo, passando por várias telas |
-| Dependências | Mocks (repository, feedback, auth) | Hooks e providers reais; só a infra externa é substituída |
-| Custo | Rápido; a falha aponta o lugar exato | Mais lento; a falha exige investigar |
-
-**O que torna isso viável é a injeção de dependência** (módulos anteriores): o app roda com `SupabaseRepositories` e `AsyncStorage`; o teste injeta `InMemoryRepository` e `InMemoryStorage` pelos **mesmos providers**. O código de domínio não muda, só a implementação plugada. E por que não usar o `AsyncStorage` real: ele tem dependência nativa e o Jest roda só JavaScript — em vez de mockar a biblioteca (seção 6), troca-se a implementação pela interface.
-
-### A infraestrutura: quatro peças (código real do projeto)
-
-**1. `AppStack` extraída do layout raiz** (`src/ui/navigation/AppStack.tsx`). O `app/_layout.tsx` ficou com o que é só do app (fontes, splash, providers de produção) e renderiza `<AppStack />`; o teste reutiliza o mesmo componente.
-
-**2. `renderApp` com `renderRouter`.** Não há sistema de arquivos no teste, então `renderRouter` (de `expo-router/testing-library`) recebe um **mapa rota → componente** que espelha `app/`. As chaves precisam bater exatamente, inclusive grupos e segmentos dinâmicos:
-```tsx
-renderRouter({
-  _layout: () => <AppStack />,
-  "(protected)/_layout": () => <ProtectedLayout />,
-  "(protected)/(tabs)/index": () => <HomeScreen />,
-  "(protected)/city-details/[id]": () => <CityDetails />,
-  "sign-in": () => <SignInScreen />,
-  // ...
-}, { wrapper: Wrapper, initialUrl: "/" });
-```
-`wrapper` envolve todas as rotas com os providers; `initialUrl: "/"` abre o app como na primeira execução.
-
-**3. Wrapper com os providers de teste** — mesma árvore do layout raiz, sem fontes/`StatusBar`, com fakes: `StorageProvider` → `AuthProvider` → `FeedbackProvider` → `RepositoryProvider` → `ThemeProvider` (+ `<Toast />`). A ordem **não é livre**: `AuthProvider` usa `useStorage()` por dentro, então o storage tem que envolvê-lo (regra da seção 3 do `auth-forms.md`). Cuidado com auto-import: `ThemeProvider` é de `@shopify/restyle` (não de `@react-navigation/native`) e `Toast` é o componente do projeto, não o da biblioteca.
-
-**4. `InMemoryStorage`**: implementa a mesma `IStorage` com um `Map`, exportado como **singleton** (`inMemoryStorage`) para persistir durante o teste e poder ser limpo com `clear()`.
-
-> **Fidelidade do fake, verificada:** diferente do adapter real (que faz `JSON.stringify`/`parse`), `InMemoryStorage` guarda o objeto **como está**. Conferi: `getItem` devolve a **mesma referência** que foi salva (uma mutação no objeto devolvido altera o armazenado), e um `Date` sobrevive como `Date` em memória, mas vira `string` no round-trip por JSON. É um caso concreto do custo "o fake precisa acompanhar o real" (tabela abaixo): um bug de serialização passaria despercebido.
-
-### O primeiro teste — e o que ele realmente afirma
-
-```tsx
-describe('Integration: Auth flow test', () => {
-  test('the user can sign-in and sign-out', async () => {
-    renderApp();
-    expect(await screen.findByText("Bem-vindo"));
-  });
-});
-```
-
-> **Correção em relação ao resumo da aula:** este teste não prova que o app "chega à Home". `"Bem-vindo"` existe **só** em `app/sign-in.tsx` (título da tela de login). Sem usuário salvo, o `ProtectedLayout` redireciona pra `/sign-in` — então o que o teste confirma é que **o app inicializa e o guard de autenticação redireciona**. Verifiquei: `expect(screen).toHavePathname("/sign-in")` passa e `not.toHavePathname("/")` também. Isso é um teste válido (o guard funciona!) — só não é o que o texto dizia.
-
-Melhorias pequenas, todas conferidas:
-- **Afirmar o roteamento em vez do texto:** `expo-router/testing-library` registra matchers próprios — `toHavePathname`, `toHavePathnameWithParams`, `toHaveSegments`, `toHaveSearchParams`, `toHaveRouterState`. Pegadinha: funcionam em runtime, mas o `tsc` acusa `TS2339` — o pacote não entrega os tipos, então é preciso uma declaração própria (augmentation de `jest.Matchers`).
-- **`expect(await findByText(...))` sem matcher** é o mesmo padrão da aula 10 (funciona porque `findBy` lança) — falta `.toBeOnTheScreen()`.
-- **O nome `'the user can sign-in and sign-out'` descreve o cenário da próxima aula**, não este (mesmo problema de "nome enganoso" da aula 5).
-- **`renderApp()` não dá `return` no resultado de `renderRouter`**, então `getPathname()`/`getSegments()` ficam inacessíveis. Os matchers acima (que operam sobre `screen`) e o `testRouter` funcionam mesmo assim, mas devolver o resultado é grátis.
-
-### Problemas encontrados no setup
-
-| Sintoma | O que a anotação diz | O que o repositório mostra |
-|---|---|---|
-| Erro ao importar `renderRouter` de `expo-router/testing-library` | `@types/jest ^30` com `jest ~29.7` → fixar `@types/jest` em `29.5.14` | `@types/jest` **continua `^30.0.0`** (30.0.0 instalado). O diff real foi `expo-router` `~5.0.6` → `5.1.11` (exato) **e** `query-string ^7` adicionado |
-| Aviso "update … not wrapped in `act(...)`" | O teste terminava antes dos `useEffect` dos providers/router | Corrigido com `await screen.findByText(...)` — confere |
-
-**Sobre o primeiro erro, a anotação e o repositório não batem** — vale confirmar qual mudança de fato resolveu. O que consegui verificar: no `expo-router` 5.1.11 instalado, `build/fork/getPathFromState*.js` faz `require("query-string")`, mas o pacote **não declara** `query-string` em `dependencies` nem `peerDependencies` — uma dependência "fantasma", que só resolve se algum outro pacote a deixar içada em `node_modules`. Declará-la no próprio app é o contorno padrão. Já `^7` mantém a linha CommonJS (a 7.1.3 instalada não declara `type: module`); antes de subir de major, conferir se virou ESM — reabriria a questão do `transformIgnorePatterns` da seção 2. Separadamente, alinhar `@types/jest` à major do Jest segue sendo boa higiene (hoje: tipos 30, runtime 29.7).
-
-**Regra geral do segundo caso:** em integração, prefira `findBy*` (espera) a `getBy*` sempre que a tela dependa de carregamento, sessão ou navegação — aqui o redirect só acontece **depois** da hidratação da sessão (`isReady`, `auth-forms.md` §1).
-
-### Trade-offs
-
-| Decisão | Ganho | Custo |
-|---|---|---|
-| Renderizar o app inteiro, não telas isoladas | Testa navegação, providers e casos de uso juntos, como o usuário usa | Mais lento; a falha pode estar em qualquer camada |
-| Fakes em memória via DI, em vez de `jest.mock` | Sem mocks presos a detalhes da biblioteca; testa contra a interface | O fake precisa acompanhar o real — ver abaixo |
-| Mapa de rotas escrito à mão no `renderApp` | Controle explícito do que existe no teste | Duplica a estrutura de `app/`; rota nova não entra sozinha |
-| `TestProviders` copiado do layout raiz | Liberdade pra trocar implementações | Duas árvores que podem divergir (provider novo esquecido no teste) |
-| Storage como singleton | Simples de importar e inspecionar | **Estado vaza entre testes se não for limpo** |
-
-**Duas instâncias concretas neste projeto:**
-- *O fake que valida menos que o real:* `inMemoryAuthRepository.signIn` procura o usuário só pelo e-mail e **ignora a senha**. Um teste de integração com ele nunca pegaria "senha errada deve ser rejeitada" — se o Supabase valida e o fake não, o teste passa e o app quebra.
-- *O vazamento que vem aí:* hoje há um único teste, então nada vaza. Mas na aula 12, um teste de sign-in grava `AUTH_KEY` no `inMemoryStorage` singleton — e o teste seguinte, ao montar o app, **hidrata esse usuário e cai direto na Home**. Sem limpeza entre testes, a ordem de execução passa a decidir o resultado *(refinado na aula 12: isso só acontece dentro do mesmo arquivo — ver abaixo)*. O projeto não tem nenhum arquivo de setup (a config do Jest é só `{ "preset": "jest-expo" }`); um arquivo de setup só roda se estiver registrado em `setupFilesAfterEnv` — esquecer isso é uma falha silenciosa.
-
-### Evoluções propostas (nas anotações; **não implementadas** — só `AppStack` foi extraído)
-
-- **Um único `AppProviders` parametrizado** (`repository`, `storage`), usado pelo layout raiz e pelo teste — elimina o risco de duas árvores divergirem.
-- **`renderApp` com overrides** (`initialUrl`, `repository`, `storage`) pra começar em qualquer rota e com estado preparado, sem uma função por cenário. *(Aulas 13 e 15: já tem `isAuthenticated` e `repositories` (override parcial por teste, aula 15); `initialUrl`/`storage` seguem fixos.)*
-- **Reset global** (`inMemoryStorage.clear()` num `beforeEach` de um arquivo registrado em `setupFilesAfterEnv`).
-- **Um fake por porta** (Repository, Storage, HTTP, relógio): toda dependência que sai do processo ganha interface + implementação real + implementação em memória.
-- **Navegação como componente fora de `app/`** (`ProtectedLayout`, `TabLayout` — hoje o `renderApp` ainda os importa direto dos arquivos de rota) e **`appRoutes` em arquivo próprio**, com um teste que compare as chaves com os arquivos de `app/`.
-- **Scripts separados** pra rodar unidade no dia a dia e integração no CI (o arquivo já segue a convenção `*.integration.test.tsx`, o que permite filtrar por nome).
-
-### Caminhos alternativos
-
-| Alternativa | Quando escolher | Custo |
-|---|---|---|
-| Mock oficial da lib nativa (`jest.mock`) | Projeto sem DI, ou poucas dependências nativas | Teste acoplado à biblioteca; trocar de storage quebra os testes |
-| MSW na camada HTTP (repository real, rede interceptada) | O risco está no mapeamento da API (payloads, erros, status) | Mais configuração; respostas precisam acompanhar o contrato real |
-| Rotas parciais no `renderRouter` | Fluxos curtos, teste leve | Menos fiel: não pega guards/layouts que ficaram de fora |
-| Tela isolada com navegação mockada | Teste de componente rápido | Testa a intenção (`router.push` chamado), não a navegação |
-| E2E (Maestro/Detox) | Poucos fluxos críticos antes de release | Lento, exige simulador no CI, mais instável |
-
-Divisão comum, fechando com a pirâmide da seção 1: muitos testes unitários, alguns de integração com fakes (como aqui) pros fluxos principais, poucos E2E pro que depende do nativo.
-
-### Checklist pra replicar (com o estado deste projeto)
-
-- [ ] Alinhar `@types/jest` à major do Jest *(hoje: tipos 30, Jest 29.7)*
-- [x] Extrair `AppStack` pra fora de `app/` *(só ela; `ProtectedLayout`/`TabLayout` ainda vêm de `app/`)*
-- [x] Interface + `InMemoryStorage` *(fake de Repository já existia)*
-- [ ] `AppProviders` parametrizado, usado no layout raiz e no teste
-- [x] `renderApp` espelhando `app/` *(`appRoutes` ainda não está em arquivo próprio)*
-- [ ] Limpar os fakes entre testes (`beforeEach` + `setupFilesAfterEnv`)
-- [x] Primeiro teste com `findBy*`
-
-→ O fluxo de fato (sign-in → Home → sign-out) foi escrito na aula 12, logo abaixo.
-
-### Aula 12 — o fluxo de sign-in e sign-out
-
-**A técnica central: o fluxo do usuário é o roteiro do teste.** Antes de qualquer código, escreva os passos como comentários (o que o usuário faz, na ordem) e traduza cada um. O teste fica legível como uma história e a ordem das asserções deixa de ser decisão arbitrária:
-
-```tsx
-test('the user can sign-in and sign-out', async () => {
-  renderApp();
-  expect(await screen.findByText("Bem-vindo"));                       // tela renderizou
-
-  fireEvent.changeText(screen.getByPlaceholderText('seu email'), "...");   // digita credenciais
-  fireEvent.changeText(screen.getByPlaceholderText('digite sua senha'), "...");
-  fireEvent.press(screen.getByText(/entrar/i));                       // aperta Entrar
-
-  expect(await screen.findByText('signed in: ...')).toBeOnTheScreen();   // toast que o usuário vê
-  expect(await screen.findByText("Rio de Janeiro")).toBeOnTheScreen();   // Home renderizou
-  expect(screen.getByText("Bangkok")).toBeOnTheScreen();
-
-  fireEvent.press(screen.getByText("Perfil"));                        // aba Perfil
-  fireEvent.press(screen.getByText("Sair"));                          // sign-out
-  expect(await screen.findByText("Bem-vindo")).toBeOnTheScreen();     // voltou ao login
-});
-```
-
-**Quando usar `getBy`, `queryBy` ou `findBy` — a regra aplicada neste teste:**
-- `findBy` pro **primeiro** elemento que depende de algo assíncrono (o toast, a Home); `getBy` pros elementos que aparecem **no mesmo render** (`"Bangkok"` logo depois de `"Rio de Janeiro"`).
-- `getByText("Perfil")` acha o *rótulo da aba*, que existe desde o início; e `getByText("Sair")` logo após o `press` funciona porque o `fireEvent` roda dentro de `act` e a tela de perfil renderiza síncrona, de estado local. Se ela buscasse dados, seria `findBy`.
-- `getByPlaceholderText` acha os campos **sem nenhum `testID`** — confirmando o que a aula 9 antecipou (os 5 `testID` do `SignUpForm` eram dispensáveis). `/entrar/i` é frouxo de propósito, mas tem custo: se surgir outro texto com "entrar" na tela, `getByText` passa a lançar "múltiplos elementos".
-
-> **Atenção com a lista:** `FlatList` virtualiza também no teste. Medi: das 15 cidades da fixture só **10** estão na árvore (`Rio de Janeiro` … `Dubai`); `Cidade do México`, `Hong Kong`, `Košice`, `Melbourne` e `Singapura` **não** são encontradas por `getBy`. `"Bangkok"` (3ª) é segura; um item da 11ª posição em diante exigiria rolar a lista ou aumentar `initialNumToRender`.
-
-### Toast na tela vs. função chamada
-
-No teste unitário de `useAuthSignIn` (aula 7), `expect(mockSendFeedback).toHaveBeenCalledWith(...)` prova que a **função foi chamada** — não que o usuário viu algo. Aqui a asserção é o **texto do toast na tela**, o que o usuário de fato enxerga. A aula demonstra isso do jeito certo: comentar o envio do feedback faz o teste de integração falhar (vermelho antes do verde, aula 4).
-
-Nuance: o teste fica **independente da implementação do `FeedbackService`**, mas continua preso ao **canal de UI** que o wrapper injeta (`ToastFeedback` + `<Toast />`). Refatorar o interior do serviço mantém o teste verde; trocar o canal por `AlertFeedback` (um `Alert.alert` nativo, que não entra na árvore do RNTL) o quebraria. Os dois testes **não são redundantes**: o unitário fixa o contrato do hook (payload exato, caminho de erro); o de integração fixa a fiação ponta a ponta.
-
-### Cobertura como bússola enquanto se escreve o fluxo
+| `Repositories` (city, category, auth) | `InMemoryRepository` — ou um override por teste (5.4) |
+| `IStorage` | `InMemoryStorage` |
+| `IFeedbackService` | `ToastFeedback` + `<Toast />` (o usuário vê o texto) |
+| `AuthContext` | `AuthProvider` real + sessão semeada, ou `MockedAuthProvider` (5.3) |
+| Ícones, mapas, worklets (nativos) | mocks globais (4.5) |
+
+## 1.2 Setup do Jest em Expo (e em projeto que já existe)
 
 ```jsonc
 // package.json
-"jest": { "preset": "jest-expo", "collectCoverageFrom": ["{src,app}/**/*.{ts,tsx}"] }
+"scripts": { "test": "jest --watchAll --verbose", "test:coverage": "jest --verbose --coverage" },
+"jest": {
+  "preset": "jest-expo",
+  "setupFilesAfterEnv": ["<rootDir>/jest.setup.tsx"],
+  "collectCoverageFrom": ["{src,app}/**/*.{ts,tsx}"]
+}
+// tsconfig.json → "compilerOptions": { "types": ["jest"] }
 ```
 
-Isso é um **glob**, não uma regex. **O mecanismo:** sem `collectCoverageFrom`, o Jest só reporta arquivos que algum teste chegou a **carregar** — o que nunca foi importado simplesmente não existe no relatório, e a porcentagem fica bonita por omissão. Com o glob, tudo que casa entra, mesmo a 0%. Medido neste projeto:
-
-| | Sem o glob | Com o glob |
+| Item | Por quê existe | Se ignorar |
 |---|---|---|
-| Arquivos no relatório | 64 | **86** (+22 nunca carregados: `SupabaseAuthRepository.ts`, `AsyncStorage.ts`, `AlertFeedback.tsx`, `reset-password.tsx`, `useAuthSendResetPasswordEmail.ts`…) |
-| Statements | 42,39% (145/342) | **31,08%** (129/415) |
+| `npx expo install jest-expo jest @types/jest @testing-library/react-native --dev` | `expo install` escolhe a versão **compatível com o SDK**; `jest-expo` deve ser da mesma linha do `expo` (aqui `~57` ↔ `^57`) | `jest-expo` de outra linha mocka o SDK errado |
+| `preset: "jest-expo"` | Mocka a parte nativa do SDK → testes rodam sem simulador | Módulo nativo quebra dentro do Node |
+| `types: ["jest"]` | Só tipos: `test`/`expect` são globais injetadas em runtime | Editor/`tsc` acusam "não definido" com o teste rodando |
+| React 19: não instale `react-test-renderer` por reflexo | A doc do Expo diz que o RNTL o substitui e que ele não suporta React 19+ | Dependência morta/conflitante *(neste projeto os dois estão instalados — revisar)* |
+| `transformIgnorePatterns` | Jest não transpila `node_modules`; lib de terceiro em ESM/JSX cru dá `SyntaxError: Cannot use import statement` | Só aparece quando um teste importa algo real, parecendo bug seu |
+| `collectCoverageFrom` | Inclui no relatório o que nenhum teste carregou (6.1) | Cobertura inflada por omissão |
+| `setupFilesAfterEnv` | Onde vivem mocks globais, hooks e matchers (4.5) | Esquecer de registrar = o arquivo **nunca roda**, sem erro |
 
-E há um segundo efeito: sem o glob o relatório também contava **16 imagens** (15 JPGs de cidades + a logo) como "100% cobertas" — cada `require` de imagem vira um stub de 1 statement. Os 16 statements de diferença no numerador (145 vs 129) são exatamente eles. O glob torna o número **menor e honesto**: acrescenta o que faltava e tira o que inflava. *(Ambas as execuções incluíam o teste de integração ainda falhando — vale a comparação relativa, não os valores absolutos de um estado "pós-fluxo".)*
+**Descoberta de arquivos:** o `testMatch` padrão tem duas regras independentes — pasta `__tests__/` (plural) **ou** qualquer `*.test.ts(x)` / `*.spec.ts(x)`. Uma pasta `__test__/` (singular) só é achada pela segunda regra: funciona, mas um arquivo sem o sufixo `.test.` ali dentro **não roda**, em silêncio. Padronize.
 
-**A técnica da aula:** rode `jest --coverage` e abra `coverage/lcov-report/index.html` (a pasta já está no `.gitignore`) como **medidor de progresso**. Cada passo do fluxo acende mais linhas: renderizar o login cobre `SignInScreen`, mas `handleSignIn` segue vermelho; após o `press`, `saveAuthUser` fica verde; só após o "Sair" `removeAuthUser` e `useAuthSignOut` ficam verdes.
+## 1.3 Anatomia de um bom teste
 
-O que isso ensina (continuação da seção 7):
-- **Renderizado ≠ exercitado:** um arquivo aparece coberto no nível do módulo enquanto seus handlers estão vermelhos.
-- **Cobertura "falsa" por teste unitário:** `useAuthSignIn` mostra 100% por causa do teste unitário (tudo mockado) — mas nunca foi testado **ligado** a nada. É o espelho da seção 7: lá, módulo mockado dá 0%; aqui, módulo testado só com mocks dá 100% que não diz se ele funciona integrado.
-- **Um teste de integração cobre arquivos sem teste próprio** (`useAuthSignOut`, `AuthContext`, `SignInScreen`, `Profile`) — o custo-benefício que justifica o setup caro da aula 11.
-- **Nem tudo precisa de 100%:** o `if (error) throw` do repository fica de fora, e tudo bem.
-
-### Decisões e trade-offs deste teste
-
-| Decisão | Ganho | Custo |
-|---|---|---|
-| Um teste longo e sequencial pra jornada inteira | Lê como uma história; o estado carrega naturalmente | A 1ª falha esconde os passos seguintes; o nome não diz qual metade quebrou; dividir exige semear estado (abaixo) |
-| Afirmar dados da fixture pelo nome (`"Rio de Janeiro"`, `"Bangkok"`) | Verifica o que o usuário vê; determinístico com o repository em memória | Acoplado aos dados de demonstração — renomear uma cidade quebra o teste |
-| Queries por placeholder/texto, sem `testID` | Nenhuma mudança no código de produção | Placeholder some ao digitar; regex frouxo pode colidir; `getByLabelText` segue impossível (lacuna da aula 9) |
-| Unitário + integração para o mesmo caso de uso | Contrato exato + fiação real | Alguma sobreposição de intenção |
-
-### Achados no repositório (verificados rodando)
-
-**1. O teste, como está, falha — e o motivo é de dados.** Ele faz login com `gabriel@gmail.com`, mas a fixture de `authUsers` só tem `lucas@coffstack.com` e `maria@coffstack.com`. `signIn` lança `"user not found"`, a tela mostra o toast de **erro** (`error ao fazer login` / `user not found`) e o de sucesso nunca aparece: `Unable to find an element with text: signed in: gabriel@gmail.com`. O teste de integração fez o trabalho dele — mostrou exatamente o que o usuário veria. As credenciais da transcrição (`Lucas@tec.com`/`12345678`) também não são as da fixture: a fixture do repositório é a fonte da verdade. Usar `lucas@coffstack.com` ou adicionar o usuário a `authUsers` resolve. **Resolvido:** o teste passou a digitar e esperar `lucas@coffstack.com` (mesmo e-mail nos dois lugares). E, como o fake **ignora a senha** (verifiquei: `"qualquer-coisa"` é aceita), o teste não consegue provar que senha errada seria rejeitada.
-
-**2. Bug em `useAppQuery`: refetch infinito (o achado mais importante).** Ao corrigir as credenciais, o teste **trava** na Home — nem o `findBy` estoura o próprio timeout de 1s; só o timeout do Jest encerra. Isolei: com sessão semeada (sem sign-in) a Home também trava, então o problema é a Home, não o login.
-
-```ts
-useEffect(() => { _fetchData(); }, [dependencies]);   // ← a identidade do array, não o conteúdo
+```tsx
+describe("should NOT submit form", () => {                       // uma regra
+  it("when the email is invalid", async () => {                  // uma condição → lê como frase
+    // Arrange: tudo válido, exceto o campo sob teste
+    // Act:     o gesto do usuário
+    // Assert:  o resultado — de preferência antes E depois da ação
+  });
+});
 ```
 
-`dependencies` é um array **novo a cada render** — literal inline em `useCityFindAll` (`[filters.name, filters.categoryId]`) e o default `= []` nos outros três (`useCityFindById`, `useGetRelatedCities`, `useCategoryFindAll`). Cada render cria um array novo, o efeito reexecuta, `_fetchData` altera estado, causa render, e o ciclo recomeça. Medi com um `jest.fn()` espião: **258.933 chamadas ao fetch em 300ms**, contra **1** quando a referência é estável. Com o repository em memória a promessa resolve na hora, o ciclo roda em microtasks e **sufoca os timers** — por isso o `findBy` nunca tem chance de falhar nem de passar: o sintoma é um **travamento**, não uma asserção vermelha. *(Precisão da aula 13: em testes com `renderRouter` os timers são **fake**, e o que fica sufocado é o laço de polling do `waitFor`/`findBy`, que precisa ceder ao event loop a cada volta — o diagnóstico e a correção não mudam.)*
+- **`test` e `it` são o mesmo método** (alias). Escolha um por projeto; nomes lidos como frase.
+- **AAA com assert dos dois lados:** checar `Pressed:0` **antes** e `Pressed:1` **depois** prova que o clique *causou* a mudança — não que o valor já nasceu certo.
+- **Falhe de propósito** (a regra de ouro): mude o valor esperado, comente a lógica ou troque a mensagem; rode; confirme que falha com uma mensagem útil. Um teste que passa com a lógica errada é falso positivo — pior que não ter teste.
+- **Nome enganoso** não é falso positivo, mas faz quem lê a falha procurar o bug no lugar errado (ex.: `"…press the reset text 2"` que na verdade pressiona o label 4 vezes).
+- **Isolamento entre testes:** um `jest.fn()` criado no escopo do arquivo **acumula chamadas** entre testes. `beforeEach(() => jest.clearAllMocks())` zera o histórico.
 
-A correção é passar o próprio array como lista de dependências (`}, dependencies)`) — a semântica pretendida ("refaz o fetch quando as dependências mudam"). Provei a causa sem tocar no arquivo: um `jest.mock` descartável do hook com **só essa linha trocada** e o fluxo inteiro passou em ~180ms. **O mesmo defeito existe em produção** (cada render da Home dispara novos fetches); com latência de rede o ciclo é mais lento, mas não termina — isso é inferência a partir do mecanismo, vale confirmar no log de rede/Reactotron. O `// eslint-disable-next-line react-hooks/exhaustive-deps` na linha acima é o que impediu o linter de apontar.
-
-Lições portáteis: (a) **um teste que renderiza o código real acha o que teste unitário não acha** — `useAppQuery` nunca tinha sido montado com chamadores reais até a Home ser renderizada; (b) **quando `findBy` não passa nem falha dentro do próprio timeout, suspeite de loop de render/efeito** e conte chamadas com um `jest.fn()`; (c) **provar a causa trocando um módulo inteiro num teste descartável** antes de mexer no código é uma forma barata de bissecção.
-
-> **Resolvido.** Correção aplicada: `}, dependencies)` no `useAppQuery` e `[id]` passado em `useCityFindById` e `useGetRelatedCities`. Verificado no hook **real**: deps inline → **1** fetch; sem deps → **1** fetch; mudar o `id` → refaz (2 chamadas, com `["rio"]` e `["tokyo"]`), e só então. O teste de integração passa em ~275ms e a suíte inteira (7 suítes, 14 testes) fica verde.
->
-> **A segunda metade da correção importa:** `useCityFindById(id)` e `useGetRelatedCities(id)` não passavam dependência nenhuma. Enquanto o hook refazia o fetch **a cada render**, isso passava despercebido — o loop acidental também "acompanhava" mudanças de `id`. Consertar só o hook faria os dois buscarem **uma vez** e ignorarem trocas de `id` (dado velho na tela). Regra geral: **ao corrigir um bug de dependência, procure os chamadores que dependiam do acidente** — o que antes funcionava por excesso de execução passa a exigir a dependência declarada.
-
-**3. O vazamento do storage, refinado.** Na aula 11 anotei que o singleton `inMemoryStorage` vazaria entre testes. Verifiquei o escopo: vaza **só dentro do mesmo arquivo** — um teste que semeou a sessão deixou `AUTH_KEY` lá e o teste seguinte, sem semear nada, abriu **já logado**; já um **arquivo diferente** enxergou `null`, porque o Jest dá a cada arquivo de teste seu próprio registro de módulos. O teste atual se limpa sozinho (o "Sair" remove a chave), mas se falhar antes dele, a sessão sobra pros testes seguintes do arquivo. `beforeEach(() => inMemoryStorage.clear())` resolve.
-
-**4. Semear a sessão pelo storage em vez de clicar pela UI** (verificado): `await inMemoryStorage.setItem("AUTH_KEY", user)` antes de `renderApp()` abre o app direto na Home (`toHavePathname('/')`), sem passar pelo formulário. É a mesma hidratação de sessão do `auth-forms.md` §1, usada de propósito: **prepare o estado pela mesma persistência de onde o app lê**. Isso permite dividir o teste longo — o de sign-out semeia a sessão; o de sign-in começa limpo. (`AUTH_KEY` é uma constante não exportada em `AuthContext.tsx`; o teste duplicaria a string — exportá-la evita divergência.)
-
-**5. Observações menores.** O `expect(await screen.findByText("Bem-vindo"))` do início não tem matcher (padrão da aula 10), enquanto o do fim tem `.toBeOnTheScreen()`. A asserção final **não é vazia** — conferi que, depois do sign-in, `queryByText("Bem-vindo")` é `null` (o login sai da árvore, pois o sign-in faz `router.replace`), então sua reaparição prova o sign-out; mais explícito ainda seria `expect(screen).toHavePathname("/sign-in")`. Na transcrição a tela pós-sign-out às vezes é chamada de "Home" — provável erro de transcrição: neste app, `"Bem-vindo"` é a tela de **login**.
-
-### Aula 13 — Home e City Details: começar autenticado, fake timers e depuração
-
-*(Estado do teste nesta aula: só a primeira metade — a Home autenticada exibe a lista. Pressionar um card e chegar nos detalhes ainda não foi escrito.)*
-
-**O problema:** todo teste de integração começa com o app "recém-aberto", sem sessão. A maioria dos testes (Home, detalhes, perfil) **não é sobre autenticação** — repetir o login em cada um é custo e acoplamento inúteis. Há três formas de começar autenticado, e a escolha é um trade-off:
-
-| Técnica | Como | Passa pelo `AuthProvider` real? | Custo / risco |
+| | Zera histórico | Zera implementação (`mockResolvedValue…`) | Devolve o original |
 |---|---|---|---|
-| Login pela UI | o fluxo da aula 12 | sim | o mais lento; acopla todo teste ao formulário |
-| Semear o storage | `inMemoryStorage.setItem("AUTH_KEY", user)` antes do `renderApp()` | **sim** (hidratação real) | acopla à chave e à serialização; singleton exige `clear()` |
-| Provider mockado | `renderApp({ isAuthenticated: true })` | **não** | o mais rápido; sem estado no storage; mas `saveAuthUser`/`removeAuthUser` viram no-op |
+| `clearAllMocks` | ✅ | ❌ | ❌ |
+| `resetAllMocks` | ✅ | ✅ | ❌ |
+| `restoreAllMocks` | — | — | ✅ (só para `jest.spyOn`) |
 
-```tsx
-// src/test-utils/renderApp.tsx
-function MockedAuthProvider({ children }: React.PropsWithChildren) {
-  const authUser: AuthUser = { email: "lucas@coffstack.com", id: "1", fullname: "Lucas Garcez" };
-  return (
-    <AuthContext.Provider value={{ isReady: true, authUser, saveAuthUser: async () => {}, removeAuthUser: async () => {} }}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
+**Fixe — Parte 1**
+- Testável = depende de abstração injetada; isolar é trocar o `value` do Provider.
+- `expo install`, nunca instale `jest-expo` "na última".
+- Setup registrado errado falha alto; **não** registrado falha calado.
+- Todo teste novo deve ser visto **falhando** uma vez.
 
-export function renderApp(options?: { isAuthenticated?: boolean }) {
-  const FinalAuthProvider = options?.isAuthenticated ? MockedAuthProvider : AuthProvider;
-  // ... mesma árvore de antes, com <FinalAuthProvider> no lugar de <AuthProvider>
-}
-```
+---
 
-**O mecanismo:** `AuthContext` é exportado, então o teste monta o **próprio `Provider` com um valor pronto**, em vez de substituir o componente consumidor. O `ProtectedLayout` só lê `useAuth()`: vê `isReady: true` e um usuário e não redireciona. Verifiquei: o app abre direto na Home (`toHavePathname("/")`) e o storage fica intocado (`AUTH_KEY` segue `null`) — por isso, nesta técnica, não há vazamento de estado entre testes.
+# Parte 2 — Queries: como achar elementos
 
-**O que o atalho custa (verificado):**
-- **Sign-out vira no-op.** Com `isAuthenticated: true`, apertar "Sair" **não desloga**: o usuário permanece em `/profile` e o botão continua na tela. Com o `AuthProvider` real e a sessão semeada, o mesmo "Sair" volta ao login. Regra: o provider mockado serve a testes **sobre outra feature**; o teste de autenticação (`AuthFlow`) continua com o provider real — e é ele que cobre a hidratação, a splash e o `saveAuthUser`, que o mock nunca executa.
-- **Uma flag booleana que troca um provider inteiro é um interruptor binário.** Quando um teste precisar saber *quem* está logado (ex.: o perfil exibir o nome), `renderApp({ user })` com `user?: AuthUser | null` expressa "está logado?" e "quem?" no mesmo parâmetro. Hoje o usuário fixo (`Lucas Garcez`) é irrelevante — só o `(protected)/_layout` lê `authUser` —, mas vira dado vazando nas asserções assim que alguma tela o exibir.
+## 2.1 Escolha a query pela prioridade do usuário
 
-### `renderRouter` liga os fake timers — e um `setTimeout` cru nunca dispara
+`getByRole` → `getByLabelText` → `getByPlaceholderText` → `getByText` → `getByDisplayValue` → **`getByTestId` por último**. Quanto mais a consulta se parece com o que o usuário **percebe**, mais ela te protege de refatorações.
 
-No fonte do `expo-router/testing-library`, **cada chamada de `renderRouter` executa `jest.useFakeTimers()`** (e restaura o horário do sistema). Conferi depois de `renderApp()`: `setTimeout.clock` existe e há timers pendentes (`getTimerCount() → 3`). Ou seja: todo teste de integração deste projeto roda sob fake timers, sem nenhuma linha no arquivo de teste pedindo isso (diferente da aula 5, em que o `beforeAll` os ligava explicitamente).
+> **Acessibilidade ≈ testabilidade.** Neste projeto `getByLabelText` é impossível: o `TextInput` renderiza o `label` como `<Text>` irmão, sem `accessibilityLabel`; o `IconButton` não tem nome acessível. O que o teste não alcança por label, o leitor de tela também não anuncia. Corrigir um corrige o outro. Enquanto isso, `getByPlaceholderText` achou os campos sem nenhum `testID`.
 
-Consequências práticas:
-- `await new Promise(r => setTimeout(r, 400))` **trava para sempre** — o relógio fake não avança sozinho. (Foi exatamente o que fez uma investigação confundir esse travamento com um bug do app, até o fonte da lib ser lido — vale lembrar disso antes de culpar o código.)
-- `findBy*` e `waitFor` funcionam porque o RNTL **avança os fake timers** a cada volta do polling — por isso toda a aula 12 passou sem ninguém notar.
-- Para fazer o tempo passar de propósito: `await act(async () => { jest.advanceTimersByTime(500); })`.
+## 2.2 `getBy`, `queryBy`, `findBy`
 
-### Ruído nos logs (inofensivo, mas aponta uma lacuna)
+| Variante | Espera? | Se não achar | Use para |
+|---|---|---|---|
+| `getBy*` | não | **lança** | o que já deve estar na tela |
+| `queryBy*` | não | `null` | afirmar **ausência** (`expect(...).toBeNull()`) |
+| `findBy*` | **sim** (async) | rejeita no timeout | o que aparece depois de trabalho assíncrono |
 
-- `[Layout children]: No route named "+not-found" exists` a cada `renderApp`: o `AppStack` declara `<Stack.Screen name="+not-found" />`, mas o mapa de rotas do teste não tem essa entrada — uma instância concreta do custo "o mapa duplica `app/`" da aula 11. Registrar a rota no mapa silencia.
-- `An update to … was not wrapped in act(...)`: aparece quando uma mutation termina **depois** que o `fireEvent.press` já retornou (visto com o `setIsLoading(false)` do `useAppMutation`). Aguardar algo com `findBy*` — ou envolver em `act` — resolve.
+`*AllBy*` devolvem lista. `waitForElementToBeRemoved(() => getBy…)` espera algo **sumir** — e **exige que o elemento exista na chamada** (senão lança `…are already removed`).
 
-### Depurando um teste: debugger, call stack e timeout
+**Regra:** o **primeiro** elemento depois de um gatilho assíncrono → `findBy`; os **irmãos do mesmo render** → `getBy` (se `"Rio de Janeiro"` apareceu, `"Bangkok"` já está lá).
 
-A aula mostra o depurador do editor (extensão do Jest, ação **Debug** sobre o teste). A ideia central: o teste executa o **código real** do app em Node, então um breakpoint funciona em **qualquer arquivo que o teste alcance** — o `renderItem` da lista, um hook, o `findAll` do repository em memória.
+## 2.3 Casar texto sem se enganar
 
-- **Call stack:** o painel lateral mostra a cadeia de quem chamou quem — por exemplo `InMemoryCityRepository.findAll` ← o fetch do `useAppQuery` ← `useCityFindAll` ← a tela. Você enxerga **por que** o código está ali, não só onde. Boa parte dos frames é de `node_modules` (internos do React); o útil é saltar entre os frames **seus**.
-- O breakpoint no `renderItem` parou uma cidade por vez (Rio, Tóquio, Bangkok…) — coerente com as **10** itens iniciais da `FlatList` (aula 12).
-- **O timeout do Jest continua contando enquanto você está parado no breakpoint**, e o teste estoura com `Exceeded timeout` ao retomar. Solução: o **terceiro argumento** de `it(nome, fn, ms)` (a aula usou `50000`; o teste levou ~29s sem estourar), `jest.setTimeout(ms)` ou `--testTimeout`. Equivalente em linha de comando: `node --inspect-brk node_modules/.bin/jest --runInBand <arquivo>` e anexar o depurador (`--runInBand` porque a depuração precisa de um único processo).
-
-> **Atenção ao timeout de depuração que sobra:** o `50000` ficou no teste da Home. Um timeout longo **mascara travamentos** — com o padrão de 5s, o loop do `useAppQuery` (aula 12) foi reportado em 5s; com 50s, seriam 50s de espera por nada. Elevar só durante a sessão de debug e voltar ao padrão depois. (O teste também ainda tem um `//` vazio e um nome — "…navigate to details when the city card is pressed" — que promete mais do que o corpo verifica, o mesmo "nome enganoso" da aula 5, até a segunda metade ser escrita.)
-
-**Qual ferramenta pra qual dúvida** (todas usadas nestas aulas):
-
-| Dúvida | Ferramenta |
-|---|---|
-| O que **está renderizado** agora? | `screen.debug()` — e a árvore que o RNTL já imprime sozinho quando um `getBy`/`findBy` falha |
-| Em que **ordem/quando** as etapas acontecem, e onde o teste para? | marcadores `console.log("STEP +Nms …")` |
-| Algo está sendo chamado **vezes demais** (loop)? | espião `jest.fn()` contando chamadas (foi assim que o refetch infinito apareceu) |
-| Qual é o **valor** de uma variável, e **quem** chamou esta função? | debugger com breakpoint + call stack |
-
-### Aula 14 — Home → City Details: navegar, voltar, buscar
-
-```tsx
-renderApp({ isAuthenticated: true });
-fireEvent.press(await screen.findByText("Rio de Janeiro"));          // card → detalhes
-expect(await screen.findByText("Pontos turísticos")).toBeOnTheScreen();   // ← falha (ver abaixo)
-fireEvent.press(screen.getByTestId("Chevron-left"));                 // volta
-expect(await screen.findByText("Dubai")).toBeOnTheScreen();          // de volta à Home
-fireEvent.changeText(screen.getByTestId("search-input"), "barcelona");
-await waitForElementToBeRemoved(() => screen.getByText("Dubai"));    // busca filtra a lista
-expect(screen.getByText("Barcelona")).toBeOnTheScreen();
-```
-
-#### Estudo de caso: por que o teste falha (e como chegar nisso sozinho)
-
-`Unable to find an element with text: Pontos turísticos` — a navegação **funcionou** (conferi: o pathname é `/city-details/rio-de-janeiro` e o conteúdo da cidade, como "Cristo Redentor", está na tela). O que não existe é a string: o título real no código é **`Pontos Turísticos`** (T maiúsculo, `CityDetailsTouristAttractions.tsx`), e `getByText` com string é **exato e sensível a maiúsculas** (aula 3). Uma letra de diferença.
-
-**Verificado:** trocando só esse "t" por "T", o teste inteiro passa (~336ms) — não havia outra falha escondida atrás desta (diferente do caso da aula 7, em que um erro mascarava outros dois).
-
-**O procedimento, que vale mais que a correção** — como ler a falha de um teste de integração:
-1. **O que foi procurado?** A primeira linha da mensagem (`…with text: Pontos turísticos`).
-2. **Cheguei na tela certa?** Confirme antes de culpar o texto: `expect(screen).toHavePathname(...)` ou um texto que você sabe que está lá. Aqui sim — então o problema é a busca, não a navegação.
-3. **O texto existe, escrito de outro jeito?** Procure um **fragmento** (sem maiúsculas, sem acento) na árvore impressa **ou direto no código-fonte**: `grep -rn "Pontos tur" app src` achou o título certo de uma vez. Diferenças de caixa, acento e espaço saltam aos olhos.
-4. **Corrigir o teste ou o app?** Se o app mostra o texto certo e o teste digitou errado, é o teste.
-
-**Como evitar a classe inteira de erro** (cada uma com seu custo):
+`getByText("texto")` é **exato e sensível a maiúsculas**. Casos reais:
 
 | Abordagem | Ganho | Custo |
 |---|---|---|
-| String exata, como está | Estrita: pega mudança de redação | Quebra por qualquer detalhe de caixa/pontuação |
-| Regex com `i`, ex.: `/pontos turísticos/i` | Tolera caixa | Mais frouxa — pode casar texto não intencional (aula 3) |
-| Texto vindo de uma fonte única (constantes ou i18n) importada pelo app **e** pelo teste | Teste e app **não podem divergir** | Exige que o app tenha essa camada (hoje a copy está escrita nos componentes) |
+| String exata | Estrita; pega mudança de redação | Quebra por caixa/pontuação — `"Pontos turísticos"` ≠ `"Pontos Turísticos"` (uma letra) |
+| Regex com `i` — `/pontos turísticos/i` | Tolera caixa | Frouxa: `/entrar/i` passa a casar qualquer texto com "entrar" e `getByText` lança *múltiplos elementos* |
+| Texto de fonte única (constante/i18n) usada pelo app **e** pelo teste | Não podem divergir | Exige essa camada no app |
 
-*(O arquivo de teste não foi alterado — a correção é de uma letra, vale você mesmo aplicar e rodar.)*
+Armadilhas de regex: `.` **sem escapar** casa qualquer caractere (`/Is loading..../` casa `"Is loadingXXXX"`; se quer o ponto, `\.`; se quer só a palavra, `/loading/i`). Para mensagens compostas (`erro ao carregar cidades.server is down!`), afirme **fragmentos independentes** em vez da string inteira — não acopla ao separador.
 
-#### O que este fluxo ensina
+## 2.4 O que as queries enxergam
 
-**1. Queries enxergam o que o usuário vê — telas cobertas ficam de fora.** O card faz `<Link push …>` (aula 9): os detalhes entram **por cima** da Home, que continua montada por baixo, só que marcada como oculta (`aria-hidden`). O RNTL 13 ignora elementos ocultos por padrão (`defaultIncludeHiddenElements: false`). Contagem de matches com os detalhes em primeiro plano:
+- **Elementos ocultos são ignorados por padrão** (RNTL 13: `defaultIncludeHiddenElements: false`). Uma tela coberta por outra numa pilha fica `aria-hidden`. Medido com o detalhe da cidade sobre a Home:
 
-| Texto | Query padrão | Incluindo ocultos |
+  | Texto | Query padrão | Incluindo ocultos |
+  |---|---|---|
+  | `Dubai` | **0** | 1 |
+  | `Rio de Janeiro` | 1 (o nome nos detalhes) | 2 (+ card da Home) |
+
+- **Marcador de tela:** para provar "voltei à Home", afirme algo que existe **só** nela e está **ausente** no estado de origem (`Dubai`, não `Rio de Janeiro`). Senão a asserção passa mesmo se o "voltar" falhar. Prove também por rota: `expect(screen).toHavePathname("/")`.
+- **`FlatList` virtualiza também em teste:** só os primeiros `initialNumToRender` (10) entram na árvore — das 15 cidades, as 5 últimas **não** são achadas. `Dubai` é a 10ª: marcador no limite, frágil (uma cidade inserida antes o empurra para fora).
+
+## 2.5 `testID`: último recurso, com três regras
+
+1. **Ids derivados precisam tratar ausência.** ``testID={`${testID}-container`}`` com `testID` indefinido vira a string `"undefined-container"` — medi dois `TextInput` sem id com **dois** elementos iguais, em produção.
+2. **Ids repetidos quebram `getByTestId`** (lança *múltiplos elementos*). `testID={iconName}` identifica "um ícone", não "qual botão".
+3. **Mocks entram no mesmo espaço de nomes.** Um mock que injeta `testID` pode colidir com o do produto (4.5) — dê ao mock um **prefixo próprio**.
+
+**Fixe — Parte 2**
+- Priorize role/label/placeholder/texto; `testID` é o último recurso, derivado com cuidado.
+- `getBy` presente · `queryBy` ausente · `findBy` assíncrono.
+- Texto exato é case-sensitive; regex frouxa colide; `.` sem `\` casa tudo.
+- O que está oculto não existe para a query — e é por isso que "voltei à Home" é provável.
+
+---
+
+# Parte 3 — Interação, assíncrono e tempo
+
+## 3.1 `fireEvent` vs `userEvent`
+
+| | `fireEvent` | `userEvent` |
 |---|---|---|
-| `Dubai` | **0** | 1 |
-| `Rio de Janeiro` | 1 (o nome nos detalhes) | 2 (+ o card da Home) |
-| `Tóquio` | 0 | 1 |
-| `Barcelona` | 0 | 1 |
+| O que faz | Chama a prop (`onPress`) **direto** | Simula a **sequência real** de eventos de um toque |
+| Execução | Síncrona | Assíncrona (`await user.press(...)`) |
+| Precisa de fake timers? | Não | Sim (os delays internos precisam de relógio controlável) |
+| Use quando | Basta provar a transição de estado | A fidelidade do gesto importa (`onPressIn`/`onPressOut`, debounce de toques) |
 
-**2. Escolher o "marcador" certo para provar "voltei".** O comentário "Dubai city card" no teste esconde uma decisão boa: para provar que a Home voltou, afirme um elemento que existe **só na Home**. `"Rio de Janeiro"` seria uma prova vazia — existe nas duas telas e passaria mesmo se o "voltar" falhasse. `Dubai` aparece **0** vezes enquanto os detalhes estão por cima; então o `findByText("Dubai")` só passa se a Home realmente estiver visível de novo. A regra: **o marcador tem de estar ausente no estado de origem** (é isso que o `0` acima demonstra).
+Coexistem — trocar tudo por `userEvent` não é upgrade automático, é mais setup. `userEvent` opera sobre o **elemento host** no fundo da árvore; qualquer componente próprio que acabe num primitivo interativo funciona. `fireEvent.changeText` define o **valor final de uma vez** (não tecla por tecla).
 
-*Fragilidade do marcador escolhido:* `Dubai` é a **10ª de 15** cidades — exatamente o último item entre os 10 que a `FlatList` renderiza de início (aula 12). Inserir uma cidade antes dele na fixture o empurraria pra fora do render inicial e o teste falharia por um motivo sem relação com navegação. Complemento barato: `expect(screen).toHavePathname("/")` prova a navegação sem depender de conteúdo.
+## 3.2 Assíncrono: `act`, `waitFor`, `findBy`
 
-**3. `testID` derivado, de novo.** O `IconButton` ganhou `testID={iconName}` (mesma técnica do `${testID}-container` da aula 10). Custos: o teste fica preso ao **nome do ícone**; todo `IconButton` em produção carrega um `testID`; e `Chevron-left` identifica "um ícone", não "qual botão de voltar" — funciona porque só um está visível por vez (os ocultos são ignorados, ponto 1). Há também um achado de acessibilidade: o `IconButton` **não tem `accessibilityLabel`** nem role, então um botão só de ícone não tem nome acessível — um leitor de tela não anuncia o que ele faz, e o teste só o alcança pelo `testID`. O mesmo "testabilidade ≈ acessibilidade" da aula 9.
+- **Por que o `expect` não pode vir logo depois do gesto:** `handleSubmit` do React Hook Form faz `await _runSchema()` (o resolver do Zod) **antes** de chamar seu `onSubmit`. Quando o `press` retorna, o callback ainda não rodou — um `expect` síncrono falharia com o código correto.
+- **`waitFor` repete o callback** até passar ou estourar o timeout (~1s). Regras: **só asserções dentro** (ações repetiriam); um `waitFor` que falha só avisa **depois do timeout inteiro**; para "esperar um elemento aparecer", `findBy*` é o atalho.
+- **`An update to X … was not wrapped in act(...)`:** uma atualização de estado chegou **depois** que o teste terminou. Resolver: aguardar algo (`findBy*`) ou envolver em `act`; se o culpado é um filho com efeito assíncrono, **bisseção por remoção** (comente o filho até o aviso sumir) e depois mocke (4.5). "Não vejo o aviso" não é "não há o problema" — testes longos com muitas esperas escondem o que um curto expõe.
 
-**4. `waitForElementToBeRemoved` — esperar o que *some*.** O callback precisa **achar** o elemento na hora da chamada; se ele já não existir, o RNTL lança `The element(s) given to waitForElementToBeRemoved are already removed…` (conferi no fonte) — então ele só serve depois de você ter certeza de que o elemento está lá (aqui, o `findByText("Dubai")` anterior garante). Depois disso ele repete até o elemento sumir. Na prática, o trio de espera: `findBy*` espera **aparecer**; `waitForElementToBeRemoved` espera **sumir**; `queryBy*` + `toBeNull()` é a checagem de ausência **imediata**, sem esperar.
+## 3.3 Fake timers: os três fatos
 
-**Por que a busca funciona sem nenhum `advanceTimersByTime`:** o filtro é *debounced* (`useDebounce`), e o `renderRouter` já deixou os timers **fake** (aula 13) — o `waitFor` interno avança o relógio fake a cada volta do polling, então o debounce expira sozinho. Depois da remoção, `getByText` síncrono basta para `Barcelona`/`Espanha`: a lista re-renderiza inteira (regra da aula 12).
+1. **Você pode ligá-los:** `beforeAll(() => jest.useFakeTimers())` / `afterAll(() => jest.useRealTimers())`. O escopo é o **`describe` inteiro** (diferente de `beforeEach`, que roda por teste).
+2. **`renderRouter` os liga sozinho, em toda chamada** (está no fonte do `expo-router/testing-library`: `jest.useFakeTimers()`). Medi após `renderApp()`: `setTimeout.clock` existe e há timers pendentes. Logo, **todo teste de integração roda sob fake timers**:
+   - `await new Promise(r => setTimeout(r, 400))` **trava para sempre** — o relógio fake não avança sozinho;
+   - `findBy*`/`waitFor` **avançam o relógio** a cada volta do polling — por isso um debounce de busca "simplesmente funciona".
+3. **Para fazer o tempo passar de propósito:** `await act(async () => { jest.advanceTimersByTime(500); })`.
 
-#### O que este teste prova — e o que não
+## 3.4 Estado transitório (loading): promise controlada
 
-Prova a navegação nos dois sentidos e que a busca filtra a lista. **Não prova a busca real:** roda sobre o repository em memória (`toLowerCase().includes`), enquanto a versão Supabase usa `ilike` — semelhante, mas não idêntica (por exemplo, `%` e `_` digitados pelo usuário são curingas no `ilike`). É o "fake que valida diferente do real" da aula 11, agora na busca. *(Esse último ponto é raciocínio sobre o comportamento do Postgres, não algo executado aqui.)* O `50000` de timeout segue no teste — o padrão de 5s teria acusado qualquer travamento bem mais cedo.
-
-## 10. Mockando o Repository: erro, loading e dados
-
-Até aqui só o caminho feliz foi testado. **Erro, loading e lista vazia são comportamento de produto** — precisam existir na tela antes de poderem ser testados — e testá-los exige uma forma de **forçar** o backend a falhar, demorar ou devolver vazio, sem mexer no fake compartilhado. Esta aula resolve as duas coisas.
-
-### 1. Primeiro o app precisa ter o estado — escrever o teste revela a lacuna
-
-A Home não tratava loading nem erro: com `findAll` falhando, a tela simplesmente ficava vazia. Como a `FlatList` **não sabe por que está vazia** (carregando? falhou? não há dados?), a tela precisa dizer, usando o que o hook já devolve:
-
-```tsx
-const { data: cities, isLoading, error } = useCityFindAll(/* ... */);
-
-function renderEmptyComponent() {
-  let Content;
-  if (isLoading)   Content = <Text>carregando cidades...</Text>;
-  else if (error)  Content = <Text>erro ao carregar cidades.{error.message}</Text>;
-  else             Content = <Text>não há cidades no momento</Text>;
-  return <Box alignSelf="center" mt="s32">{Content}</Box>;
-}
-// <Animated.FlatList ... ListEmptyComponent={renderEmptyComponent()} />
-```
-
-A **ordem do `if` importa**: o estado inicial do `useAppQuery` é `isLoading: true`, então loading vem primeiro. Lição: ao tentar escrever o teste de um estado, a pergunta certa é "o produto trata isso?" — aqui não tratava. (A aula avisa que o tratamento de verdade vem com o TanStack Query, no módulo seguinte; isto é o mínimo para viabilizar o teste.)
-
-### 2. Injetar a falha: `renderApp({ repositories })`
-
-```tsx
-// src/test-utils/renderApp.tsx
-type DeepPartial<T> = { [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P] };
-
-export function renderApp(options?: { isAuthenticated?: boolean; repositories?: DeepPartial<Repositories> }) {
-  const finalRepository: Repositories = merge(clonedeep(InMemoryRepository), options?.repositories ?? {});
-  // ... <RepositoryProvider value={finalRepository}> ...
-}
-
-// no teste — só o findAll de city é substituído; o resto do repository continua funcionando
-renderApp({ isAuthenticated: true, repositories: { city: { findAll: async () => Promise.reject(new Error("server is down!")) } } });
-```
-
-**Três jeitos de forçar um cenário — quando usar cada um:**
-
-| Jeito | Escopo | Quando usar | Custo |
-|---|---|---|---|
-| Editar o repository em memória | Global e permanente | **Só** para ver o estado na mão, rodando o app (jogar um `throw` no `findAll`) — nunca commitar | Afeta todos os testes e telas |
-| `jest.mock` do módulo do repository | O arquivo de teste inteiro | Projeto **sem** injeção de dependência | Preso ao caminho do módulo (aula 7); troca o módulo todo, perde o resto |
-| **Override por teste via DI** (esta aula) | **Um** teste | O padrão aqui: o app já recebe o repository por Provider | Infra de teste a manter — o `renderApp` cresce |
-
-**Por que `cloneDeep` + `merge` (comportamento verificado, não suposto):**
-- O clone é **outro objeto** e **preserva o prototype** das classes — o `findById` e o resto seguem existindo; o `merge` troca só `findAll` na **cópia**; o original fica intacto.
-- **Sem o clone, o `merge` muta o singleton compartilhado** `InMemoryRepository` — a falha injetada num teste vazaria pros testes seguintes do mesmo arquivo (cada arquivo tem seu registro de módulos, aula 12). É essa a razão do `cloneDeep`.
-- **Armadilhas do `merge`:** arrays são mesclados **por índice** (`[1,2,3]` + `[9]` → `[9,2,3]`) e `undefined` **não** sobrescreve. Funciona bem aqui porque o que se troca são **funções**; pra sobrescrever **dados**, passe uma função que devolve o array novo em vez de um array.
-
-**`DeepPartial`: o tipo que parece proteger e não protege (verificado).** Testei 4 usos contra o tipo da aula:
-
-| Override | Tipo da aula | Variante que preserva funções |
-|---|---|---|
-| `findAll: async () => 123` (retorno errado) | **compila** | erro `TS2322` |
-| `findAll: "oops"` (nem é função) | **compila** | erro `TS2322` |
-| `naoExiste: async () => []` (chave inexistente) | erro `TS2353` | erro `TS2353` |
-| `findAll: async () => []` (correto) | ok | ok |
-
-O motivo: para membros que são **funções**, `T[P] extends object` é verdadeiro (função é objeto), e o tipo mapeado "colapsa" num `{}` — que aceita qualquer coisa não nula. O tipo checa **chaves**, não **contratos**; um fake com retorno errado compila, e o teste passa ou quebra por motivo sem relação com o app. A correção é preservar funções antes de recursar:
-
-```ts
-type DeepPartial<T> = {
-  [P in keyof T]?: T[P] extends (...args: any[]) => any ? T[P]
-                 : T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
-```
-**Regra:** um tipo usado para construir fakes tem de checar o fake contra o **contrato real** — senão ele deriva em silêncio (a mesma família do "fake infiel" da aula 11). E um utilitário de tipo copiado da internet merece um "teste de tipo" de dois minutos: escreva usos certos e errados e veja o que o `tsc` rejeita — foi isso que revelou a lacuna.
-
-### 3. Testar os três estados
-
-```tsx
-// erro: dois fragmentos independentes, não a string inteira
-expect(await screen.findByText(/erro ao carregar cidades/i)).toBeOnTheScreen();
-expect(await screen.findByText(/server is down!/i)).toBeOnTheScreen();
-```
-A mensagem real é `erro ao carregar cidades.server is down!` (ponto sem espaço); buscar os dois pedaços separados evita acoplar o teste ao **formato** do separador. Ambos casam o mesmo `<Text>` (o `getByText` compara o conteúdo combinado). Custo do regex frouxo: o da aula 3.
-
-**Loading é um estado transitório — como testá-lo sem depender de sorte.** O teste da lista vazia afirma `findByText(/carregando cidades/i)` e depois `/não há cidades/i`. Funciona, mas por uma **coincidência de ordem de execução** (raciocínio, não medição): o fake resolve numa microtask *depois* que o `render` síncrono devolve, então o primeiro polling ainda vê o loading. Com um fake que resolve imediatamente, a janela é finíssima. A técnica determinística — **promise controlada** (verificada):
+Um fake que resolve na hora só deixa o loading visível por uma **coincidência de ordem de execução** *(raciocínio)*. Determinístico:
 
 ```tsx
 let resolve!: (v: any[]) => void;
 const pending = new Promise<any[]>((r) => (resolve = r));
 renderApp({ isAuthenticated: true, repositories: { city: { findAll: () => pending } } });
 
-expect(await screen.findByText(/carregando cidades/i)).toBeOnTheScreen();   // fica carregando enquanto você não resolver
-await act(async () => { resolve([]); });                                    // você decide quando termina
+expect(await screen.findByText(/carregando cidades/i)).toBeOnTheScreen();   // fica carregando…
+await act(async () => { resolve([]); });                                    // …até VOCÊ resolver
 expect(await screen.findByText(/não há cidades no momento/i)).toBeOnTheScreen();
 expect(screen.queryByText(/carregando cidades/i)).toBeNull();               // e o loading SOME
 ```
-Ela dá controle total do instante, e ainda afirma algo que o teste atual não afirma: que o loading **desaparece**. O delay de 2s com `setTimeout` mostrado na aula serve para **ver o estado na mão** no app rodando — no teste, use a promise controlada.
 
-### 4. Cobertura como mapa dos cenários que faltam
+Verificado: passa, e ainda prova algo que o teste simples não prova — o loading **desaparece**. (Um `setTimeout` de 2s serve para ver o estado **na mão** no app, não em teste.)
 
-Medi o arquivo da Home (`app/(protected)/(tabs)/index.tsx`):
-
-| Testes rodados | Statements | **Branches** | Lines |
-|---|---|---|---|
-| Só o fluxo feliz | 94,44% | **75%** | 94,44% |
-| Os 3 testes | 100% | **100%** | 100% |
-
-O número que revela é o de **branches**: o caminho feliz nunca entra nas ramificações de erro e de lista vazia. Há uma sutileza que a aula destaca: o ramo de **loading** aparece coberto em *todo* teste, porque todo render começa carregando — mas só o teste da lista vazia o **afirma**. **Coberto ≠ afirmado.** Use a cobertura para achar ramificações nunca exercitadas e escrever um cenário para cada; não leia "linha verde" como "alguém verificou isso".
-
-### 5. Armadilhas — o que evitar (verificadas rodando)
-
-Os três testes da aula passam, mas cada estado foi testado **isolado, a partir do render inicial**. Testando **transições**, aparecem dois defeitos:
-
-- **Erro velho que não some.** Falha no 1º fetch → o usuário digita na busca → o 2º fetch **dá certo e devolve lista vazia** → a tela continua mostrando `erro ao carregar cidades` em vez de `não há cidades no momento`. Causa: o `useAppQuery` nunca zera `error` quando um novo fetch começa.
-- **Dado velho com erro invisível.** 1º fetch traz cidades → o usuário digita → o 2º fetch **falha** → a lista antiga **continua na tela** e nenhuma mensagem de erro aparece. Duas causas: o hook mantém `data` quando falha, e os estados só são mostrados no `ListEmptyComponent`, que **só renderiza com a lista vazia**. O usuário vê resultados desatualizados como se a busca tivesse funcionado.
-
-Ambos são lacunas na **máquina de estados** do hook (faltam transições: ao iniciar um fetch, limpar o erro; decidir o que fazer com `data` numa falha) — exatamente o que o TanStack Query resolve. Enquanto isso não chega, os testes que fecham a lacuna são os de **transição** (erro → sucesso, sucesso → erro), não mais um teste de estado isolado.
-
-- **Jest verde, `tsc` vermelho.** `error.message` em `index.tsx` dá `TS2339`: `if (error)` estreita `unknown` para `{}`, que não tem `message`. O Jest passa porque o Babel remove os tipos — ele **não** checa tipos. Correção: `error instanceof Error ? error.message : String(error)`. E rodar `tsc --noEmit` junto do Jest no CI (mesma família do `@ts-ignore` no `auth-forms.md`).
-
-### Resumo: quando usar, o que evitar
-
-| Situação | Use | Evite |
-|---|---|---|
-| Forçar erro/vazio num teste de integração | Override por teste via DI (`renderApp({ repositories })`) | Editar o fake compartilhado; `jest.mock` quando já há DI |
-| Testar um estado transitório (loading) | Promise controlada (deferred) | Depender da ordem de microtasks ou de delays reais |
-| Tipar overrides de fakes | `DeepPartial` que **preserva funções** | O `DeepPartial` ingênuo, copiado sem testar o que ele rejeita |
-| Sobrescrever com `lodash.merge` | Clonar antes; trocar funções/objetos | Mutar o singleton; sobrescrever arrays por `merge` |
-| Ler cobertura | Procurar **branches** nunca exercitados | Tratar linha verde como "afirmado" |
-| Cobrir estados de UI | Testar também as **transições** entre estados | Só testar cada estado a partir do render inicial |
-
-## 11. Mocks globais
-
-Alguns componentes não pertencem ao que você quer testar e ainda **atrapalham**: disparam efeitos assíncronos, dependem de módulo nativo ou de fonte. Mockar cada um em cada arquivo de teste é repetição; a saída é um **mock global**, registrado uma vez, que vale para toda a suíte. Esta aula mostra o caminho completo — achar o problema, mockar um componente, tornar o mock global — e o projeto, no estado atual, ilustra dois tropeços reais desse caminho.
-
-### 1. O problema: um componente que atualiza estado depois que o teste acaba
-
-O teste do `CityCard` (renderiza nome e país da cidade) passa, mas imprime:
-
-```
-An update to Icon inside a test was not wrapped in act(...)
-```
-
-**Como localizar a causa — bisseção por remoção:** comente o filho suspeito e veja se o warning some. Aqui, comentar o `<Icon />` do card o fez desaparecer, então o culpado é o ícone. Conferi **por que** no código do `@expo/vector-icons` (`createIconSet`): ao montar, se a fonte ainda não carregou, ele faz `await Font.loadAsync(font)` e **depois** `this.setState({ fontIsLoaded: true })` — uma atualização de estado assíncrona, que chega depois que um teste síncrono já terminou. Medido: o teste do card gera **1** warning de `act` sem o mock e **0** com ele.
-
-Por que os testes de integração não mostravam isso (explicação da aula): eles têm várias asserções assíncronas (`findBy*`), o que dá tempo de o estado do ícone atualizar **dentro** de uma espera do RNTL. O problema só aparece num teste curto e síncrono — vale lembrar que "não vejo o warning" não é o mesmo que "não há o problema".
-
-### 2. Mockar um componente: módulo → função → componente
-
-O projeto cria o ícone assim: `const IconFromIcoMoon = createIconSetFromIcoMoon(config, fontName, fontFile)`. O módulo exporta **uma função que devolve um componente** (conferi: `export default function (config, expoFontName, expoAssetId)`). O mock precisa ter exatamente esse formato:
-
-```tsx
-jest.mock("@expo/vector-icons/createIconSetFromIcoMoon", () => {
-  const { View } = require("react-native");           // import DENTRO da factory
-  function FakeIcon(props: any) {
-    return <View testID={props.name} />;
-  }
-  return () => FakeIcon;                               // módulo = função que devolve o componente
-});
-```
-
-**Os tropeços de montar isso, na ordem em que aparecem:**
-- **Retornar `null` não funciona.** O app faz `<IconFromIcoMoon … />`; se a função devolve `null`, não há componente para renderizar. O fake tem de ser um componente de verdade (aqui, uma `View`).
-- **A factory não pode referenciar variáveis de fora** (`not allowed to reference any out-of-scope variables`): o `jest.mock` é içado (*hoisted*) para o topo do arquivo, antes dos `import`, então nada declarado fora dela existe ainda. Por isso `View` vem de um `require` **dentro** da factory.
-- **O fake recebe as mesmas props do componente real** (`name`, `size`, `color`). Usar `testID={props.name}` torna o mock **observável**: o teste afirma **qual ícone** foi renderizado (`getByTestId("Favorite-outline")`) sem renderizar o glifo. Isso pega erros que um mock mudo (`null`/`View` vazia) deixaria passar — um ícone errado, ou nenhum. **Custo:** o fake ignora `size` e `color`, então nada disso é verificável.
-
-### 3. Tornar global: `setupFilesAfterEnv`
-
-Um mock repetido em todo arquivo de teste vira ruído; o Jest executa arquivos de setup **antes de cada arquivo de teste**:
-
-```jsonc
-// package.json
-"jest": { "preset": "jest-expo", "setupFilesAfterEnv": ["<rootDir>/jest.setup.tsx"] }
-```
-
-`<rootDir>` é um token que o Jest troca pela raiz do projeto (um erro de digitação aqui — `root dir` em vez de `rootDir` — foi um dos tropeços da aula).
-
-**`setupFiles` ou `setupFilesAfterEnv`? Medi o que existe em cada fase:**
-
-| | `setupFiles` | `setupFilesAfterEnv` |
-|---|---|---|
-| Roda | **antes** do framework de teste ser instalado | **depois** de instalado, antes de cada arquivo de teste |
-| `expect`, `beforeEach` | **`undefined`** | disponíveis |
-| `jest` (para `jest.mock`) | disponível | disponível |
-
-Para **só** registrar `jest.mock`, os dois servem. Mas qualquer coisa que use `expect.extend`, `beforeEach` ou `afterEach` (reset global de mocks, matchers próprios) **exige** `setupFilesAfterEnv` — por isso ele é a escolha padrão, e é onde este projeto já tinha o `jest.setup.tsx` (com os mocks do Reanimated e do `react-native-maps`).
-
-Outros detalhes do arquivo:
-- **Por que `.ts` virou `.tsx`:** JSX dentro da factory (`<View … />`) só é parseado em `.tsx`. A alternativa é escrever `React.createElement(View, …)` — como o mock do `react-native-maps`, **no mesmo arquivo** — e manter `.ts`. O arquivo agora mistura os dois estilos.
-- **O que mockar globalmente:** olhe o `jest.setup.tsx` como um catálogo — worklets/Reanimated, mapas, ícones. O critério comum: **o que depende de módulo nativo, fonte ou animação e é irrelevante para o comportamento que você testa**.
-
-**Global vs. local — quando cada um:**
-
-| | Mock local (no arquivo de teste) | Mock global (`jest.setup`) |
-|---|---|---|
-| Use para | Um comportamento específico daquele teste; mocks que **afirmam chamadas** (o `useRepository` da aula 7) | Dependências nativas/assíncronas/irrelevantes que **todo** teste deveria ignorar |
-| Risco | Repetição entre arquivos | **Esconde o comportamento real de toda a suíte** e pode colidir com o que os testes usam (ver 4.2) |
-| Escape | — | Um teste que precise do real opta por sair com `jest.unmock(...)`/`jest.requireActual(...)` *(API padrão do Jest; não exercitada aqui)* |
-
-### 4. Dois problemas no estado atual do repositório (verificados)
-
-**4.1 — O Jest nem roda: `setupFiles` aponta para um arquivo que não existe.** O `package.json` ganhou:
-
-```jsonc
-"setupFiles": ["<rootDir>/setup-jest.tsx"]
-```
-
-mas o mock foi parar no `jest.setup.tsx` que já existia, e `setup-jest.tsx` não existe. Resultado: `Validation Error: Module <rootDir>/setup-jest.tsx in the setupFiles option was not found` — **a suíte inteira deixa de executar**, nenhum teste passa nem falha. Correção: remover a entrada `setupFiles` (verificado: sem ela, a suíte roda). **Resolvido:** a entrada foi removida. Nota: ela chegou a ser renomeada de `setup-jest.tsx` para `setup.jest.tsx` — e continuou quebrada, porque renomear a **referência** não cria o **arquivo**; o arquivo real é `jest.setup.tsx`, já registrado em `setupFilesAfterEnv`. Repare no contraste com a aula 11: **registrar errado um arquivo é um erro alto** (o Jest valida o caminho de cara), enquanto **esquecer de registrar** é uma falha silenciosa — o arquivo simplesmente nunca roda.
-
-**4.2 — `Found multiple elements with testID: Chevron-left`** (o erro que você colou, no teste da Home). Reproduzi e achei os dois elementos:
-
-| # | Elemento | Origem |
-|---|---|---|
-| 0 | `View` pressionável (`accessible`, com `onClick`, 2 filhos) | o `Pressable` do `IconButton`, que desde a aula 14 tem `testID={iconName}` |
-| 1 | `View` vazia, sem handler | o `FakeIcon` do mock global, que faz `testID={props.name}` |
-
-O `IconButton` renderiza `<Pressable testID="Chevron-left"> … <Icon name="Chevron-left" />`. Com o ícone real, só o `Pressable` tinha esse id; com o mock global, o ícone passou a **injetar o mesmo id** — dois elementos no mesmo namespace de `testID`. **Um mock que introduz `testID` entra no mesmo espaço de nomes dos `testID` do produto, e pode colidir.**
-
-| Correção | Avaliação |
-|---|---|
-| **Prefixar o id do mock:** `testID={`icon-${props.name}`}` | **A recomendada.** Verificado: o teste da Home e o do `CityCard` (consultando `icon-Favorite-outline`) passam. Mexe só no mock; o produto fica intacto |
-| Renomear o `testID` do `IconButton` | Funciona, mas altera código de produção para acomodar um mock |
-| `getAllByTestId("Chevron-left")[0]` | **Evitar:** esconde a colisão e depende da ordem dos elementos na árvore |
-| Consultar por `accessibilityLabel` | O melhor a longo prazo — o `IconButton` hoje não tem nome acessível (aula 14); resolver isso elimina a dependência de `testID` |
-
-**Regra para qualquer mock com `testID`:** dê ao mock um **prefixo próprio** (`icon-`, `map-`), para que ele nunca dispute o mesmo id com o produto.
-
-> **Resolvido.** Aplicada a correção recomendada: o `FakeIcon` em `jest.setup.tsx` agora faz ``testID={`icon-${props.name}`}`` e o teste do `CityCard` consulta `icon-Favorite-outline`. O teste de integração da Home **não precisou mudar** — `getByTestId("Chevron-left")` voltou a achar um único elemento (o `Pressable` do `IconButton`). Suíte inteira: 9 suítes, 18 testes verdes.
->
-> **Lição de depuração:** o teste que falhava não era o que estava errado. Quando uma mudança **global** (um mock no setup) quebra um teste **distante**, a correção costuma estar no que mudou, não no teste que acusou — corrigir o teste de integração (por exemplo, escolhendo `[0]` entre os dois elementos) teria deixado a colisão no lugar, pronta para quebrar o próximo teste que consultasse um ícone.
-
-*(Detalhe menor: o teste do `CityCard` deixou um `screen.debug()` — útil na aula para olhar a árvore, ruído se for commitado.)*
-
-### Resumo: quando mockar globalmente, o que evitar
-
-| Situação | Faça | Evite |
-|---|---|---|
-| Warning de `act` que você não entende | Bisseção: remova/substitua filhos até ele sumir; depois leia o código do culpado | Silenciar o warning ou ignorá-lo porque "o teste passa" |
-| Mockar um componente | Respeitar o **formato do módulo** (função → componente); `require` dentro da factory; fake que recebe props | Retornar `null`; referenciar variáveis de fora da factory |
-| Registrar um mock global | `setupFilesAfterEnv` (e conferir que o caminho existe) | Deixar entradas de config apontando para arquivos que não existem |
-| `testID` num mock | Prefixo próprio (`icon-<nome>`) | Reusar o mesmo id que o produto usa |
-| Mockar o que é irrelevante | Dependências nativas/assíncronas que todo teste ignoraria | Mockar globalmente o que algum teste precisa ver de verdade |
-
-## 12. Snapshot testing
-
-*(a preencher — quando um snapshot ajuda (evitar regressão visual não intencional) e quando vira ruído (snapshot gigante que ninguém revisa de verdade antes de aceitar).)*
+**Fixe — Parte 3**
+- `fireEvent` = handler direto; `userEvent` = gesto real (async + fake timers).
+- Efeito assíncrono ⇒ `await findBy`/`waitFor` (só asserções) ou `act`.
+- Em integração os timers **já são fake**: nunca `setTimeout` cru; `advanceTimersByTime` dentro de `act`.
+- Loading determinístico = promise que você resolve.
 
 ---
 
-## 13. Mapa aula → conceito
+# Parte 4 — Testes de unidade: fronteira, hooks, formulários e mocks
 
-| Aula | Conceito principal | Seção |
+## 4.1 A fronteira do componente
+
+| Dentro (unitário) | Fora (integração) |
+|---|---|
+| `onSubmit` chamado com os dados certos | A mutation realmente cadastra |
+| Campos preenchidos chegam no payload | O toast de sucesso aparece |
+| — | A tela volta ao login |
+
+**Critério portátil:** não é "quantos arquivos o teste toca", é "a asserção atravessa a fronteira e passa a depender de um colaborador?". `expect(onSubmitMock).toHaveBeenCalled…` não atravessa (o mock **é** o colaborador); `expect(screen.getByText('cadastro feito'))` atravessa — é integração. Um bom desenho de fronteira vira, de graça, um bom limite de teste.
+
+## 4.2 Render customizado: os mesmos Providers da produção
+
+```tsx
+const AllTheProviders = ({ children }: React.PropsWithChildren) => (
+  <ThemeProvider theme={theme}>{children}</ThemeProvider>
+);
+export const renderComponent = (ui: ReactElement, options?: Omit<RenderOptions, "wrapper">) =>
+  render(ui, { wrapper: AllTheProviders, ...options });
+```
+
+Todo `render` aceita um `wrapper`; o custom apenas o **fixa** com os contextos que a árvore real usa. Cresce **conforme o teste exige** (hoje só tema). `Omit<RenderOptions, "wrapper">` reaproveita o tipo da lib e **trava** só o campo que você decidiu — ninguém sobrescreve os Providers por acidente. Evolução opcional: reexportar a lib de teste do mesmo módulo, para ninguém importar o `render` cru por engano.
+
+## 4.3 Hooks e `jest.mock` de módulo
+
+```ts
+jest.mock("@/src/infra/repositories/RepositoryProvider", () => ({
+  useRepository: () => ({ auth: { signIn: mockSignIn } }),
+}));
+const { result } = renderHook(() => useAuthSignIn());
+await act(async () => { await result.current.mutate({ email, password }); });
+expect(mockSignIn).toHaveBeenCalledWith(email, password);
+```
+
+- `renderHook` monta o hook sem componente; o retorno fica em `result.current`; mudanças de estado em `act`.
+- `jest.mock(caminho, fábrica)` **substitui o módulo inteiro**, não uma função. É **içado** (*hoisted*) para antes dos `import`.
+- **O caminho precisa resolver como um import real.** `@/src/...` funciona porque o `babel-preset-expo` lê os `paths` do `tsconfig` e **troca o prefixo `@/` literalmente** antes do Jest ver; `@src/...` (sem a barra) não casa com o prefixo, cai no resolvedor do Node e é tratado como um **pacote npm** → `Cannot find module`.
+- **Vários `jest.mock` com caminhos errados se escondem:** são avaliados em ordem e o primeiro que falha interrompe o arquivo. Corrigiu um? **Rode de novo** — não assuma que resolveu o arquivo.
+- **`jest.fn()` é um espião:** afirma que algo **foi chamado**, não que apareceu na tela. Prova **fiação** (a prop chegou ao componente nativo), não **regra de negócio**: o teste do botão `disabled` passa porque o `TouchableOpacity` do RN trata `disabled` — o componente próprio não tem lógica nenhuma. Duas confianças legítimas, não a mesma.
+
+## 4.4 Formulários e cenários de erro
+
+**Caminho feliz + `waitFor`**, sempre com os dois lados da fronteira em mente (4.1). Depois, os **testes negativos** — onde a validação é de fato fixada. Quatro regras:
+
+1. **Isole uma variável (e às vezes é obrigatório).** Com `fullname`/`email` **nunca tocados** (`undefined`), enviar senhas diferentes mostra só `campo obrigatório ×2` — **sem** "senhas devem ser iguais": o `.refine()` do objeto no Zod **não roda** quando o parse interno aborta (`undefined` é erro fatal; `min()`/`email()` não são). Com strings inválidas (`"a"`, `"x"`) os três erros aparecem; com tudo válido exceto o `confirmPassword`, só o do refine.
+2. **A ordem do `not.toHaveBeenCalled()` é o que o torna válido.** Logo depois do `press`, ele **passa mesmo com dados válidos** (medido) — a chamada é assíncrona. Asserte "não aconteceu" **depois** de aguardar algo que prove que o fluxo terminou (a mensagem de erro) e **pareie** com ela: sozinho, "não foi chamado" tem muitas causas.
+3. **Todo `expect` precisa de matcher.** `expect(await screen.findByText(...))` sem `.toBeOnTheScreen()` funciona **só porque `findBy` lança** quando não acha — parece asserção e não é.
+4. **Afirme o contrato, não o encanamento.** O `onSubmit` do RHF recebe `(dados, evento)`; asserir `undefined` como 2º argumento amarra o teste ao fato de `fireEvent.press` não passar evento — com `userEvent` ou num device real ele quebra **sem mudança de comportamento**. Prefira `mock.calls[0][0]` com `toMatchObject`. E `expect.objectContaining` com 3 de 4 campos é frouxo: se o 4º deixar de ser enviado, nada acusa.
+
+**`toHaveStyle`** — só afirmar o **texto** do erro não diz **onde** ele aparece (trocar o `path` do `refine` para o campo errado deixa o teste de texto verde; só a asserção de estilo no container certo quebra). Mecanismo: lê o estilo achatado do elemento; com Restyle compara o **valor resolvido** (`#D32F2F`), não o token (`fbErrorSurface`) — detecta **fiação** (o token de erro no elemento certo), não um valor errado do token. **Use com parcimônia:** estilo muda o tempo todo; cubra primeiro comportamento (não submeter dado inválido). Alternativa menos frágil: afirmar **estrutura** com `within(elemento)`.
+
+## 4.5 Mocks de componentes e mocks globais
+
+**Por que mockar:** o `Icon` (vector-icons) faz `await Font.loadAsync(...)` e depois `setState` — atualização assíncrona que chega depois do teste (medido: **1** aviso de `act` sem o mock, **0** com ele).
+
+```tsx
+jest.mock("@expo/vector-icons/createIconSetFromIcoMoon", () => {
+  const { View } = require("react-native");                    // import DENTRO da fábrica
+  function FakeIcon(props: any) { return <View testID={`icon-${props.name}`} />; }
+  return () => FakeIcon;                                        // módulo → função → componente
+});
+```
+
+- **O mock reproduz o formato do módulo:** aqui o módulo é uma função que devolve um componente. Retornar `null` não funciona (não há componente a renderizar).
+- **A fábrica não pode referenciar variáveis de fora** (`out-of-scope variables`): como o `jest.mock` é içado, nada de fora existe ainda — `require` dentro.
+- **Fake observável:** receber as mesmas props e expor algo (`testID`) deixa o teste afirmar **qual** ícone foi renderizado. Custo: ignora `size`/`color`.
+- **Prefixe o id do mock.** O `IconButton` já tem `testID={iconName}`; com o fake fazendo `testID={props.name}`, `getByTestId("Chevron-left")` achou **2** elementos (o `Pressable` e o ícone). Com `icon-<nome>`, resolvido.
+- **Mudar um mock global é mudar um contrato:** ao prefixar o id, o teste do `CityCard` que consultava `Favorite-outline` quebrou — procure os consumidores (`grep`) antes de mudar.
+
+| | `setupFiles` | `setupFilesAfterEnv` |
 |---|---|---|
-| 1 | Pirâmide de testes, filosofia RNTL, por que a arquitetura anterior importa | §1 |
-| 2 | Setup do Jest com Expo, resiliência de versão | §2 |
-| 3 | `describe`/`test`/`it`, `screen`, `getByText` (string vs. regex) | §3 |
-| 4 | `fireEvent`, `testID`, Arrange-Act-Assert, teste falhando de propósito | §4 |
-| 5 | `userEvent`, fake timers, nome de teste enganoso | §4 |
-| 5 | `userEvent`, fake timers | §4 |
-| 6 | Render customizado (`wrapper`, `Omit`), `jest.fn()`, convenção de pasta de teste | §5 |
-| 7 | `renderHook`, `jest.mock`, resolução de alias sob o capô | §6 |
-| 8 | `jest --coverage`, 0% mockado vs. 0% sem teste, `beforeEach`/`clearAllMocks` | §7 |
-| 9 | Fronteira do componente, `waitFor`, asserção acoplada a plumbing | §8 |
-| 10 | Teste negativo, `findBy*`, `toHaveStyle`, `testID` composto, isolar variável | §8 |
-| 11 | `renderApp`/`renderRouter`, fakes via DI, o que o 1º teste de integração afirma | §9 |
-| 12 | Fluxo sign-in/sign-out, `collectCoverageFrom`, `getBy`/`findBy` na prática, refetch infinito achado | §9 |
-| 13 | Home autenticada (provider mockado), `renderRouter` liga fake timers, debugger e call stack | §9 |
-| 14 | Home → City Details: ler uma falha de integração, queries ignoram ocultos, marcador de tela, `waitForElementToBeRemoved` | §9 |
-| 15 | Estados de erro/loading/vazio, `renderApp({ repositories })`, `DeepPartial`, promise controlada, cobertura de branches | §10 |
-| 16 | Mock global de componente (`jest.mock` + `setupFilesAfterEnv`), `setupFiles` vs `AfterEnv`, colisão de `testID` do mock | §11 |
-| 17 | Snapshot | §12 |
+| Roda | **antes** do framework de teste | **depois**, antes de cada arquivo de teste |
+| `expect`/`beforeEach` | `undefined` | disponíveis |
+| `jest` (`jest.mock`) | disponível | disponível |
+
+Para só registrar `jest.mock`, ambos servem; para hooks/`expect.extend`, só o segundo — é o padrão. `<rootDir>` é o token da raiz do projeto. JSX na fábrica exige `.tsx` (ou use `React.createElement`, como o mock do `react-native-maps` no mesmo arquivo).
+
+| | Mock local (no arquivo) | Mock global (`jest.setup`) |
+|---|---|---|
+| Use para | Comportamento específico; mocks que **afirmam chamadas** | Dependências nativas/assíncronas/irrelevantes que **todo** teste ignoraria |
+| Risco | Repetição | **Esconde o comportamento real de toda a suíte**; pode colidir com o que os testes usam |
+| Escape | — | `jest.unmock` / `jest.requireActual` *(API padrão; não exercitada aqui)* |
+
+> **Erro alto vs. calado:** apontar `setupFiles` para um arquivo que não existe dá `Validation Error: Module … was not found` e **a suíte inteira deixa de rodar**. Renomear a *referência* não cria o *arquivo*.
+
+**Fixe — Parte 4**
+- Unitário afirma só o que cruza a fronteira; colaborador ⇒ integração.
+- `@/` é prefixo substituído; `@src` vira pacote npm. Erros de `jest.mock` se escondem.
+- Negativo: isole a variável, asserte "não aconteceu" **depois** de esperar, sempre com matcher, contrato em vez de encanamento.
+- Mock de componente = formato do módulo + `require` na fábrica + prefixo no `testID`.
+- Global esconde comportamento: mocke só o nativo/assíncrono/irrelevante.
+
+---
+
+# Parte 5 — Testes de integração: o app inteiro com infra fake
+
+## 5.1 O que é e quando
+
+| | Unitário | Integração |
+|---|---|---|
+| Escopo | Um hook/componente/função | Um **fluxo**, passando por várias telas |
+| Dependências | Mocks | Hooks e providers **reais**; só a infra externa é trocada |
+| Custo | Rápido; a falha aponta o lugar | Mais lento; a falha exige investigar |
+
+Escolha integração para **jornadas do usuário** (login, navegar, buscar); unitário para regras isoláveis. O fluxo de auth reúne quase tudo: formulário, caso de uso real, navegação, sessão.
+
+## 5.2 A infraestrutura (quatro peças)
+
+1. **`AppStack` fora de `app/`** — o layout raiz mantém só o que é do app (fontes, splash, providers de produção); o teste reutiliza o mesmo componente.
+2. **`renderApp` com `renderRouter`** — sem sistema de arquivos no teste, ele recebe um **mapa rota → componente** que espelha `app/` (chaves exatas, grupos e `[id]` inclusos): `"(protected)/(tabs)/index"`, `"(protected)/city-details/[id]"`, `"sign-in"`… Rota nova no app **não entra sozinha** no mapa. (Faltar `+not-found` no mapa gera um warning inofensivo a cada render.)
+3. **Wrapper de providers** na mesma ordem de dependência da produção: `StorageProvider` → `AuthProvider` → `FeedbackProvider` → `RepositoryProvider` → `ThemeProvider` (+ `<Toast />`). A ordem **não é livre**: `AuthProvider` usa `useStorage()` por dentro.
+4. **`InMemoryStorage`** — `Map` exportado como **singleton** (para poder `clear()`).
+
+> **Fidelidade do fake:** o adapter real faz `JSON.stringify/parse`; o `InMemoryStorage` guarda **o objeto como está**. Medi: `getItem` devolve a **mesma referência** (mutação vaza) e um `Date` sobrevive como `Date` em memória mas vira `string` no round-trip por JSON. Um bug de serialização passaria despercebido.
+
+`expo-router/testing-library` registra matchers de rota — `toHavePathname`, `toHavePathnameWithParams`, `toHaveSegments`, `toHaveSearchParams`, `toHaveRouterState` — que afirmam o **destino**, não um texto qualquer. Funcionam em runtime, mas **sem tipos** (`tsc` dá `TS2339`): é preciso uma declaração própria.
+
+## 5.3 Começar autenticado: três técnicas
+
+Todo teste de integração abre o app "recém-instalado", sem sessão. A maioria dos testes **não é sobre auth** — repetir o login é custo e acoplamento.
+
+| Técnica | Como | Passa pelo `AuthProvider` real? | Custo / risco |
+|---|---|---|---|
+| Login pela UI | O fluxo de sign-in | sim | O mais lento; acopla todo teste ao formulário |
+| **Semear o storage** | `inMemoryStorage.setItem("AUTH_KEY", user)` antes do `renderApp()` | **sim** (hidratação real) | Acopla à chave/serialização; singleton exige `clear()` |
+| **Provider mockado** | `renderApp({ isAuthenticated: true })` → `AuthContext.Provider` com valor pronto | **não** | O mais rápido, sem estado no storage; mas `saveAuthUser`/`removeAuthUser` viram **no-op** |
+
+**O custo do atalho (verificado):** com o provider mockado, "Sair" **não desloga** (fica em `/profile`); com o provider real + sessão semeada, volta ao login. Regra: o mock serve a testes **de outra feature**; o teste de auth usa o real — e é ele que cobre hidratação, splash e `saveAuthUser`.
+
+**Singleton em memória vaza — mas só dentro do mesmo arquivo** (medi): um teste que semeou a sessão fez o seguinte abrir **já logado**; outro arquivo viu `null` (cada arquivo tem seu próprio registro de módulos). Um teste que se limpa sozinho (o "Sair") deixa a sessão se falhar no meio. `beforeEach(() => inMemoryStorage.clear())` resolve. Semear pela persistência é a mesma hidratação do app **usada de propósito** — e é o que permite dividir um teste de jornada longa em testes menores.
+
+## 5.4 Injetar cenários: `renderApp({ repositories })`
+
+```tsx
+const finalRepository = merge(clonedeep(InMemoryRepository), options?.repositories ?? {});
+
+renderApp({ isAuthenticated: true, repositories: {
+  city: { findAll: async () => Promise.reject(new Error("server is down!")) },   // só o findAll
+}});
+```
+
+| Como forçar um cenário | Escopo | Quando | Custo |
+|---|---|---|---|
+| Editar o repository em memória | Global, permanente | **Só** para ver o estado na mão no app (nunca commitar) | Afeta tudo |
+| `jest.mock` do módulo | O arquivo inteiro | Projeto **sem** DI | Preso ao caminho; perde o resto |
+| **Override por teste via DI** | Um teste | O padrão aqui | Infra de teste a manter |
+
+**Por que `cloneDeep` + `merge` (verificado):** o clone é outro objeto e **preserva o prototype** (o `findById` segue existindo); o `merge` troca só `findAll` na **cópia**; sem o clone, o `merge` **muta o singleton** e a falha vaza para os testes seguintes. Pegadinhas do `merge`: arrays se mesclam **por índice** (`[1,2,3]` + `[9]` → `[9,2,3]`) e `undefined` **não** sobrescreve — por isso troque **funções**, e para dados passe uma função que devolve o array.
+
+**`DeepPartial` que parece proteger e não protege.** Para membros que são funções, `T[P] extends object` é verdadeiro e o tipo mapeado colapsa num `{}` que aceita qualquer coisa:
+
+| Override | `DeepPartial` ingênuo | Preservando funções (`T[P] extends (...a) => any ? T[P] : …`) |
+|---|---|---|
+| `findAll: async () => 123` (retorno errado) | **compila** | erro `TS2322` |
+| `findAll: "oops"` | **compila** | erro `TS2322` |
+| `naoExiste: …` | erro `TS2353` | erro `TS2353` |
+| `findAll: async () => []` | ok | ok |
+
+Um tipo usado para construir fakes tem de checar o fake **contra o contrato real**. E um utilitário de tipo copiado merece um "teste de tipo" de dois minutos: escreva usos certos e errados e veja o que o `tsc` rejeita.
+
+## 5.5 Escrever o fluxo
+
+**A jornada do usuário é o roteiro.** Escreva os passos como comentários antes do código e traduza cada um:
+
+```tsx
+renderApp();
+expect(await screen.findByText("Bem-vindo")).toBeOnTheScreen();                 // login renderizou
+fireEvent.changeText(screen.getByPlaceholderText("seu email"), "lucas@coffstack.com");
+fireEvent.changeText(screen.getByPlaceholderText("digite sua senha"), "12345678");
+fireEvent.press(screen.getByText(/entrar/i));
+expect(await screen.findByText("signed in: lucas@coffstack.com")).toBeOnTheScreen();  // toast que o usuário VÊ
+expect(await screen.findByText("Rio de Janeiro")).toBeOnTheScreen();                  // Home
+fireEvent.press(screen.getByText("Perfil"));  fireEvent.press(screen.getByText("Sair"));
+expect(await screen.findByText("Bem-vindo")).toBeOnTheScreen();                       // voltou ao login
+```
+
+- **Toast na tela ≠ função chamada.** No unitário, `expect(mockSend).toHaveBeenCalled…` prova que a função foi chamada; aqui afirma-se o **texto visível**. Fica independente da implementação do serviço, mas preso ao **canal de UI** injetado (`ToastFeedback` + `<Toast/>`): trocar por um `Alert.alert` nativo tiraria o texto da árvore. Os dois testes **não são redundantes** — contrato do hook × fiação ponta a ponta.
+- **Tab × tela:** `getByText("Perfil")` acha o rótulo da aba, que existe desde o início; `getByText("Sair")` logo após o `press` funciona porque o `fireEvent` roda em `act` e a tela renderiza de estado local. Se buscasse dados: `findBy`.
+- **Home → detalhes → voltar → buscar:** o card faz `Link push`; a Home fica montada, oculta, por baixo (2.4). `waitForElementToBeRemoved` espera o `Dubai` sumir após a busca (debounce avançado pelo `waitFor`, 3.3).
+- **Estados de erro/loading/vazio:** a `FlatList` não sabe **por que** está vazia — a tela escolhe pela prioridade `isLoading` → `error` → vazio, com o que o hook devolve. Escrever o teste do estado **revela se o produto o trata**.
+- **O que o teste não prova:** roda sobre fakes. O `signIn` em memória **ignora a senha** — nunca pegaria "senha errada deve ser rejeitada"; o filtro em memória usa `includes`, o Supabase usa `ilike` (`%`/`_` digitados são curingas) *(raciocínio sobre o Postgres)*. **Fake que valida menos que o real = teste verde, app quebrado.**
+
+**Fixe — Parte 5**
+- Integração = peças reais + infra fake pelas mesmas portas; ordem dos providers segue o grafo de dependência.
+- Começar autenticado: UI (fiel) · seed (real e barato) · provider mockado (rápido, mas auth vira no-op).
+- Override por teste = `cloneDeep` + `merge` com `DeepPartial` que preserva funções.
+- A jornada é o roteiro; afirme o que o usuário vê; marcador de tela único e ausente na origem.
+- Singleton vaza só no mesmo arquivo — limpe no `beforeEach`.
+
+---
+
+# Parte 6 — Qualidade do conjunto: cobertura, depuração e o verde que engana
+
+## 6.1 Cobertura: um mapa, não um veredito
+
+- **`collectCoverageFrom: ["{src,app}/**/*.{ts,tsx}"]` é um glob.** Sem ele só aparece o que algum teste **carregou**. Medido: **64 → 86 arquivos** (+22 nunca carregados: `SupabaseAuthRepository.ts`, `AsyncStorage.ts`, `AlertFeedback.tsx`, `reset-password.tsx`…), e **42,39% → 31,08%**. Sem o glob, o relatório ainda contava **16 imagens** (15 JPGs + a logo) como "100% cobertas" — cada `require` de imagem vira um stub de 1 statement. O glob torna o número **menor e honesto**.
+- **Os dois zeros são coisas diferentes:** *sem teste algum* (leitura: falta teste) × *mockado por um teste que testa outra coisa* (o `FeedbackProvider` fica em 0% porque o teste do hook o substitui; leitura certa: falta um teste **dedicado** aos adapters, não "o feedback está sem teste").
+- **O inverso — cobertura "falsa":** `useAuthSignIn` mostra 100% por causa do teste **unitário** totalmente mockado, sem nunca ter sido testado **ligado** a nada.
+- **Olhe os *branches*, não as linhas.** Na Home: só o teste feliz = statements **94,44%**, branches **75%**; os três testes (feliz, erro, vazio) = **100%/100%**. O ramo de loading aparece coberto em *todo* teste (todo render começa carregando) mas só um teste o **afirma**: **coberto ≠ afirmado**.
+- **Técnica de trabalho:** rode `jest --coverage` e abra `coverage/lcov-report/index.html` como **medidor de progresso** do fluxo — renderizar o login cobre a tela, mas o `handleSignIn` segue vermelho até o `press`; `removeAuthUser` só acende após o "Sair". Um teste de integração cobre arquivos sem teste próprio — o que justifica o setup caro. **Nem tudo precisa de 100%.**
+
+## 6.2 Depuração: qual ferramenta para qual dúvida
+
+| Dúvida | Ferramenta |
+|---|---|
+| O que **está renderizado**? | `screen.debug()` — e a árvore que o RNTL já imprime quando um `getBy`/`findBy` falha |
+| Em que **ordem/quando** as etapas rodam, e onde o teste para? | marcadores `console.log("STEP +Nms …")` |
+| Algo é chamado **vezes demais** (loop)? | espião `jest.fn()` contando chamadas |
+| Qual o **valor** de uma variável, e **quem** chamou? | debugger com breakpoint + **call stack** |
+
+- **Debugger:** funciona em qualquer arquivo que o teste alcance (o `renderItem`, o hook, o `findAll` do repository), porque o teste roda o **código real** em Node. O call stack mostra a cadeia de chamadas (`findAll` ← fetch do `useAppQuery` ← `useCityFindAll` ← tela); a maior parte dos frames é de `node_modules` — salte entre os **seus**. Em linha de comando: `node --inspect-brk node_modules/.bin/jest --runInBand <arquivo>` (`--runInBand`: depuração exige um só processo).
+- **O timeout do Jest (5s) segue contando com o teste pausado.** Eleve só na sessão de debug (3º argumento de `it(nome, fn, ms)`, `jest.setTimeout` ou `--testTimeout`) e **volte ao padrão**: um timeout longo permanente **mascara travamentos**.
+
+**Como ler a falha de um teste de integração — 4 passos:**
+1. **O que foi procurado?** A 1ª linha da mensagem.
+2. **Cheguei na tela certa?** `toHavePathname` ou um texto que você sabe que está lá.
+3. **O texto existe, escrito de outro jeito?** Procure um **fragmento** (sem caixa, sem acento) na árvore impressa **ou no código** (`grep -rn "Pontos tur" app src`).
+4. **Corrijo o teste ou o app?**
+
+**Travou, sem mensagem — nem o `findBy` falha?** Suspeite de **loop de render/efeito** que sufoca o event loop. Prove contando chamadas: `useEffect(fn, [arrayNovoACadaRender])` reexecuta a cada render, o efeito muda estado, e o ciclo não termina — medi **258.933 chamadas ao fetch em 300ms** contra **1** com referência estável. Para **provar a causa antes de mexer no código**, troque o módulo suspeito por uma versão corrigida num teste descartável (`jest.mock` só dele).
+
+## 6.3 O verde que engana: onde cada coisa mente
+
+| Fonte de verde falso | Por quê | Defesa |
+|---|---|---|
+| Cobertura alta | Conta execução, não verificação (coberto ≠ afirmado) | Olhar branches; ler as asserções |
+| `jest.mock` de módulo | O real nunca roda (0% / comportamento simulado) | Teste dedicado do real; integração |
+| Fake mais permissivo que o real | `signIn` sem senha; `includes` × `ilike`; storage sem JSON | Comparar fake × real; teste de contrato |
+| Jest não checa tipos | O Babel remove os tipos antes de rodar | `tsc --noEmit` separado no CI |
+| Asserção vazia | `expect(x)` sem matcher; `not.toHaveBeenCalled` cedo demais; marcador não-único | Quebrar de propósito |
+| Estado compartilhado | Singletons, mocks sem `clear`, timers | `beforeEach` de reset |
+
+**Fixe — Parte 6**
+- Cobertura é mapa: branches, glob que inclui o não carregado, coberto ≠ afirmado.
+- Falha: 4 passos; travou sem mensagem = loop (conte chamadas); debug = `debug()` / `STEP` / `jest.fn` / debugger.
+- Timeout longo de debug não fica no código.
+- Jest verde + `tsc` vermelho é possível.
+
+---
+
+# Parte 7 — Casos reais: os bugs que os testes acharam
+
+Cada linha é um erro que aconteceu neste projeto — leia o **princípio**, não só a correção.
+
+| # | Sintoma | Causa | Correção | Princípio | Estado |
+|---|---|---|---|---|---|
+| 1 | `Cannot find module '@src/…'` num `jest.mock` | Typo no alias; `babel-preset-expo` troca só o prefixo `@/`; **+2 caminhos errados** no mesmo arquivo escondidos pelo 1º | `@/src/…`, pasta e profundidade relativa certas | Alias é substituição de prefixo; erros de `jest.mock` se escondem | corrigido |
+| 2 | `Unable to find … signed in: gabriel…`, tela com toast de erro `user not found` | Usuário **fora da fixture** do fake; e-mail digitado ≠ esperado | Usar usuário da fixture, mesmo e-mail nos dois lugares | Integração roda sobre fakes; leia a árvore impressa | corrigido |
+| 3 | Teste **trava** depois do login (timeout, sem mensagem) | `useAppQuery` com `[dependencies]` (identidade) → refetch infinito (258.933 chamadas/300ms) sufoca o event loop | `}, dependencies)` **+ `[id]`** nos casos de uso que dependiam do acidente | Travou = loop; conte chamadas; corrigir um bug de dependência exige achar quem dependia dele | corrigido |
+| 4 | `Unable to find … Pontos turísticos` | Match exato é case-sensitive; real: `Pontos Turísticos` | Corrigir a caixa (ou regex `/i`, ou fonte única) | Leia a falha em 4 passos | corrigido |
+| 5 | Dois elementos com `testID="undefined-container"` | ``${testID}-container`` com `testID` indefinido | `testID ? \`${testID}-container\` : undefined` | Atributo derivado de prop opcional deve tratar ausência | **aberto** |
+| 6 | `Found multiple elements with testID: Chevron-left` | Mock global do ícone injeta o mesmo `testID` do `IconButton` | Prefixo `icon-<nome>` no mock | Mocks dividem o namespace do produto | corrigido |
+| 7 | `Unable to find … testID: Favorite-outline` (CityCard) | O mock passou a `icon-…`; o teste não acompanhou | Consultar `icon-Favorite-outline` | Mudar mock global = mudar contrato; `grep` os consumidores | corrigido |
+| 8 | `Validation Error: Module … setupFiles … not found` | Entrada de config para arquivo inexistente (e renomeada, ainda inexistente) | Remover a entrada | Caminho errado é erro alto; registro esquecido é silêncio | corrigido |
+| 9 | Erro velho após refetch vazio; lista velha sem erro após refetch que falha | `useAppQuery` não zera `error` ao iniciar fetch nem descarta `data` na falha; estados só no `ListEmptyComponent` | *(sugerido)* zerar `error` no início; mostrar erro fora do vazio | Teste de **estados isolados** não pega falhas de **transição** | **aberto** |
+| 10 | Jest verde, `tsc` vermelho: `error.message` em `{}` (`TS2339`) | `if (error)` estreita `unknown` para `{}` | `error instanceof Error ? error.message : String(error)` | Jest não checa tipos | **aberto** |
+| 11 | `An update to Icon … not wrapped in act(...)` | `vector-icons`: `await Font.loadAsync` + `setState` | Mock global do ícone | Bisseção por remoção + ler o culpado | corrigido |
+| 12 | "Sair" não desloga num teste | `MockedAuthProvider.removeAuthUser` é no-op | Provider real (+ seed) nos testes de auth | O atalho tem custo | por desenho |
+| 13 | `await new Promise(r => setTimeout(r, 400))` trava | `renderRouter` liga fake timers | `act` + `advanceTimersByTime`, ou `findBy` | Saiba em que relógio você está | por desenho |
+| 14 | `expect(await findByText("Bem-vindo"));` sem matcher (2 linhas) | Funciona só porque `findBy` lança | Acrescentar `.toBeOnTheScreen()` | Toda asserção diz o que afirma | **aberto** (estilo) |
+
+---
+
+# Parte 8 — Fixação
+
+## 8.1 Playbook de sintomas
+
+| Sintoma | Causa mais provável | Primeira ação |
+|---|---|---|
+| `Unable to find an element with text` | Caixa/acento diferente · tela errada · ainda carregando | `toHavePathname`; procurar **fragmento** no código/árvore; `findBy` se for assíncrono |
+| `Found multiple elements` | `testID`/texto duplicado (mock, regex frouxa, tela coberta incluída) | `getAllBy…` para inspecionar; prefixar ids de mock; `includeHiddenElements` só se for de propósito |
+| Trava / timeout sem mensagem | Loop de render/efeito · `setTimeout` cru sob fake timers | Contar chamadas com `jest.fn()`; checar se `renderRouter` ligou fake timers |
+| `not wrapped in act(...)` | Update assíncrono depois do teste; filho com efeito assíncrono | `await findBy`; bisseção por remoção; mock global |
+| `Cannot find module` num `jest.mock` | Alias/caminho relativo errado | Corrigir **e rodar de novo** (erros se escondem) |
+| Teste passa "e parece não testar nada" | Sem matcher · `not.toHaveBeenCalled` cedo · marcador não único | Quebrar de propósito |
+| Passa isolado, falha na suíte (ou vice-versa) | Estado compartilhado: singleton, mock sem clear, timers | `beforeEach` de reset; checar escopo do arquivo |
+| `Validation Error` ao iniciar o Jest | Caminho de setup inexistente | Conferir `setupFiles*` |
+| Jest verde, app quebrado | Fake infiel · tipos não checados | Comparar fake × real; `tsc --noEmit` |
+
+## 8.2 Checklist de revisão de um teste
+
+- [ ] Afirma **o que o usuário vê/consegue fazer**, não estado interno?
+- [ ] Já foi visto **falhando** ao menos uma vez?
+- [ ] Todo `expect` tem matcher? "Não aconteceu" vem **depois** de esperar algo?
+- [ ] Query pela prioridade (role/label/placeholder/texto) — `testID` só se preciso, sem colisão?
+- [ ] Espera correta: `findBy`/`waitFor` (só asserções) ou `act` — nunca `setTimeout` cru?
+- [ ] No unitário, afirma só o que cruza a **fronteira**? No de integração, usa fakes **pelas portas**?
+- [ ] O fake valida **tanto quanto** o real? (senha, serialização, busca)
+- [ ] Marcador de tela único e **ausente** no estado de origem?
+- [ ] Estado compartilhado é limpo no `beforeEach`? Timeouts customizados foram revertidos?
+- [ ] O nome é uma frase que descreve **o que o corpo verifica**?
+
+## 8.3 O que fazer quando… (decisão rápida)
+
+| Preciso… | Faça |
+|---|---|
+| Testar uma regra isolada de hook | `renderHook` + `jest.mock` do que ele importa |
+| Testar um componente com Provider | `renderComponent` (wrapper de teste) |
+| Provar que algo foi chamado | `jest.fn()` — e `clearAllMocks` no `beforeEach` |
+| Testar um fluxo entre telas | `renderApp` + `renderRouter`, infra fake pelas portas |
+| Pular o login em testes de outra feature | Semear o storage (real) ou provider mockado (rápido, auth vira no-op) |
+| Forçar erro/vazio/loading | `renderApp({ repositories })` (+ promise controlada para loading) |
+| Isolar um componente nativo/assíncrono | Mock global, com `testID` prefixado |
+| Achar o que a suíte não cobre | Cobertura de **branches** + `collectCoverageFrom` |
+| Diagnosticar travamento | `jest.fn()` contando chamadas; trocar o módulo suspeito num teste descartável |
+
+## 8.4 Teste-se
+
+Responda **sem olhar**; confira no gabarito.
+
+1. Por que `getByText("pontos turísticos")` não acha `Pontos Turísticos`, e quais são as 3 saídas?
+2. Quando usar `getBy`, `queryBy` e `findBy`?
+3. Por que `expect(onSubmit).not.toHaveBeenCalled()` logo após o `press` pode passar mesmo com dados válidos?
+4. O que é um "marcador de tela" e qual a regra para escolhê-lo?
+5. Por que a Home "some" das queries quando os detalhes estão por cima?
+6. `fireEvent` × `userEvent`: o que cada um faz e qual exige fake timers?
+7. Num teste de integração, por que `await new Promise(r => setTimeout(r, 400))` trava?
+8. Teste trava sem mensagem e nem o `findBy` falha: qual a hipótese e como prová-la?
+9. O que o `cloneDeep` evita no override de repository?
+10. Por que o `DeepPartial` ingênuo aceita `findAll: "oops"`?
+11. Três formas de começar autenticado — e o custo do provider mockado?
+12. O singleton `inMemoryStorage` vaza entre testes: onde, e como evitar?
+13. `setupFiles` × `setupFilesAfterEnv`: o que existe em cada fase?
+14. Por que um mock com `testID` pode quebrar `getByTestId`?
+15. Como testar o estado de loading de forma determinística?
+16. 100% de cobertura garante que a funcionalidade está testada? Dê dois motivos contra.
+17. Qual número de cobertura expõe cenários nunca exercitados?
+18. Por que `collectCoverageFrom` *reduz* o percentual?
+19. Por que um teste Jest verde convive com `tsc` vermelho?
+20. O que é uma asserção acoplada ao "encanamento"? Dê o exemplo do RHF.
+21. Por que o teste negativo de "senhas diferentes" precisa preencher os outros campos?
+22. Diferença entre teste de **fiação** e de **regra de negócio**?
+23. Por que corrigir um `jest.mock` com caminho errado não garante que o arquivo está sem outros erros iguais?
+24. O fluxo de sign-in falha com "signed in: x" não encontrado e a tela mostra um toast de erro. Qual a primeira hipótese?
+25. Quando **não** usar um mock global?
+
+### Gabarito
+
+1. `getByText` com string é exato e sensível a caixa. Saídas: corrigir a caixa; regex com `i` (mais frouxa, pode colidir); texto de fonte única compartilhado entre app e teste.
+2. `getBy` para o que já está na tela (lança se não achar); `queryBy` para afirmar ausência (`null`); `findBy` para o que aparece após trabalho assíncrono (espera).
+3. A chamada é assíncrona; naquele instante ela ainda não aconteceu. Só vale depois de aguardar algo que prove que o fluxo terminou, pareado com a mensagem de erro.
+4. Elemento que prova em qual tela o usuário está. Deve existir **só** na tela esperada e estar **ausente** no estado de origem; complementar com `toHavePathname`.
+5. A tela coberta fica `aria-hidden` e o RNTL ignora elementos ocultos por padrão (`defaultIncludeHiddenElements: false`).
+6. `fireEvent` chama o handler direto (síncrono); `userEvent` simula a sequência real de eventos (async). O `userEvent` exige fake timers por causa dos delays internos.
+7. `renderRouter` liga fake timers; o relógio fake não avança sozinho. Use `findBy`/`waitFor` (que avançam) ou `act(() => jest.advanceTimersByTime(ms))`.
+8. Loop de render/efeito sufocando o event loop (ex.: deps por identidade). Prova: espião `jest.fn()` contando chamadas (258.933 vs 1) e/ou um mock descartável do módulo com a correção.
+9. Evita o `merge` mutar o singleton `InMemoryRepository`, vazando a falha injetada para os testes seguintes do arquivo; o clone preserva o prototype.
+10. Para membros função, `T[P] extends object` é verdadeiro e o tipo colapsa num `{}` que aceita qualquer coisa; a correção preserva funções antes de recursar.
+11. Login pela UI (fiel, lento); semear o storage (hidratação real, acopla à chave); provider mockado (rápido, sem storage, mas `saveAuthUser`/`removeAuthUser` viram no-op — "Sair" não desloga).
+12. Só dentro do mesmo arquivo (cada arquivo tem seu registro de módulos). `beforeEach(() => inMemoryStorage.clear())`.
+13. `setupFiles`: antes do framework — `expect`/`beforeEach` são `undefined`, `jest` existe. `setupFilesAfterEnv`: depois — tudo disponível; é o padrão para hooks/matchers.
+14. O mock entra no mesmo namespace de `testID` do produto; se o produto já usa o mesmo id, `getByTestId` lança "múltiplos elementos". Prefixar o id do mock.
+15. Fazer o fake devolver uma promise cujo `resolve` o teste controla: assertar o loading, resolver dentro de `act`, assertar o estado final e que o loading sumiu.
+16. Não. (a) Conta execução, não verificação — coberto ≠ afirmado; (b) mock zera a cobertura do real; unitário todo mockado dá 100% sem provar integração.
+17. A cobertura de **branches**.
+18. Porque inclui os arquivos que nenhum teste carregou (a 0%) e remove stubs (como as imagens contadas como cobertas): o número fica menor e honesto.
+19. O Babel remove os tipos antes de rodar; o Jest não checa tipos. É preciso rodar `tsc --noEmit` à parte.
+20. Afirmar um detalhe incidental do framework em vez do contrato: `toHaveBeenCalledWith(dados, undefined)` amarra o teste ao fato de `fireEvent.press` não passar evento (o 2º argumento do `onValid` do RHF é o evento). Prefira `mock.calls[0][0]` com `toMatchObject`.
+21. O `.refine()` do objeto no Zod só roda se o parse interno não abortar; campo `undefined` aborta, então o erro de senha nunca apareceria. Além disso, isola uma única causa possível de falha.
+22. Fiação prova que a prop/callback chega ao componente certo (ex.: `disabled` repassado ao `TouchableOpacity`); regra de negócio prova lógica própria do componente.
+23. Os `jest.mock` são avaliados em ordem e o primeiro erro interrompe o arquivo; os demais não chegam a ser avaliados. Rode de novo após cada correção.
+24. O usuário não existe na fixture do repository em memória (`user not found`) — ou o e-mail digitado difere do esperado. Leia a árvore impressa na falha.
+25. Quando algum teste precisa ver o comportamento real daquilo, ou quando o mock esconde algo que a suíte deveria verificar — mock global só para o nativo/assíncrono/irrelevante.
+
+## 8.5 Exercícios práticos (num projeto novo, sem copiar este)
+
+1. **Setup do zero.** App Expo novo: `expo install` das libs, `preset`, `types: ["jest"]`, `collectCoverageFrom`; um teste de função e um de componente. *Pronto quando* `jest --coverage` lista arquivos que nenhum teste importa.
+2. **Falhe de propósito.** Pegue 3 testes e quebre cada um de um jeito (valor esperado, lógica comentada, mensagem errada). *Pronto quando* cada falha tem uma mensagem útil — e você anotou algum teste que **não** falhou (falso positivo).
+3. **Formulário com validação.** Form com React Hook Form + Zod; 1 teste feliz e 3 negativos, **cada um isolando um campo**, com `findBy` e a ordem correta do `not.toHaveBeenCalled`.
+4. **Mock de componente nativo.** Ache um componente que gera aviso de `act`; faça a bisseção por remoção; crie um mock global com `testID` prefixado; escreva um teste que afirma **qual** componente foi renderizado.
+5. **Fluxo de integração.** Monte `renderApp` com 3 rotas; teste login → home → logout com o provider real. Depois faça o mesmo começando autenticado por **seed** e por **provider mockado**, e compare tempo, acoplamento e o que cada um deixa de cobrir.
+6. **Injeção de falha.** Implemente `renderApp({ repositories })` com `cloneDeep` + `merge` e um `DeepPartial` que preserva funções (prove com 4 casos de tipo). Teste erro, vazio e loading (promise controlada) **e uma transição** erro → sucesso.
+7. **Caça ao bug.** Introduza de propósito um loop de efeito (deps por identidade) num hook e diagnostique **só com `jest.fn()`**. *Pronto quando* você conta as chamadas e corrige.
+8. **Auditoria de cobertura.** Rode `--coverage`; para 3 arquivos em 0%, classifique "sem teste" × "mockado" e escreva o teste que falta. Olhe os *branches* de um arquivo e escreva um cenário para cada um não exercitado.
+
+---
+
+## Snapshot (a estudar)
+
+*(Aula 17 — ainda não estudada. Reservado para: quando um snapshot evita regressão visual não intencional e quando vira ruído — snapshot grande que ninguém revisa de verdade antes de aceitar —, e como ele se relaciona com os testes de estilo da seção 4.4.)*
 
 ## Glossário
 
-- **Pirâmide de testes:** muitos testes unitários (rápidos, isolados), menos testes de integração, poucos E2E (lentos, mais realistas) — a proporção inversa do custo de execução.
-- **"Testar como o usuário usa":** princípio da Testing Library — consultar a UI pelo que é visível/interagível (texto, role, label), nunca pelo estado interno de implementação.
-- **Repository fake em teste:** a mesma peça de Ports & Adapters usada em produção (in-memory) reaproveitada como test double — não é uma ferramenta de teste especial, é o mesmo adapter.
-- **`jest-expo` preso à versão do SDK:** o preset mocka a parte nativa de uma versão específica do Expo SDK — instalar via `expo install`, nunca via `npm`/`yarn` direto, garante a versão compatível.
-- **`transformIgnorePatterns`:** lista de exceções ao "Jest não transpila `node_modules`" — necessário quando uma lib de terceiros publica código não transpilado (ESM/JSX cru) e não está coberta pelo preset.
-- **`screen`:** objeto global do Testing Library que aponta pra árvore renderizada mais recente no teste — evita destruturar o retorno de `render()` em cada assert.
-- **Matcher por regex vs. string exata:** string em `getByText` exige match exato; regex permite casar por substância (case-insensitive, parcial) — mais resiliente a mudanças de copy que não afetam o comportamento testado. Cuidado com `.` não escapado (casa qualquer caractere, não um ponto literal).
-- **Arrange-Act-Assert (AAA):** estrutura padrão de um teste de interação — prepara o estado, executa a ação, verifica o resultado. Assert antes *e* depois da ação confirma que a ação causou a mudança, não só que o valor final está certo.
-- **`fireEvent` vs. simulação real de gesto:** `fireEvent` chama a prop de evento (`onPress`) direto no elemento — não passa pelos eventos intermediários que um toque real dispara. Suficiente pra lógica simples de clique; insuficiente pra comportamento amarrado a `onPressIn`/`onPressOut`/gestos.
-- **Teste falhando de propósito:** quebrar a asserção ou a implementação de propósito, rodar o teste, confirmar que ele falha — a única forma de saber que um teste que passa não é um falso positivo.
-- **`testID` como último recurso:** na ordem de prioridade do Testing Library, `testID` vem depois de role/label/texto — só se justifica quando o elemento não expõe nenhuma forma de ser identificado "como o usuário enxerga".
-- **`userEvent` vs. `fireEvent`:** `userEvent` simula a sequência real de eventos de uma interação (assíncrono, precisa de fake timers pros delays internos); `fireEvent` chama o handler direto (síncrono, sem delay). Coexistem — não é upgrade automático trocar um pelo outro.
-- **Elemento host/nativo:** o nó real (`View`, `Text`, `Pressable`, `TextInput`) no fundo da árvore renderizada, depois de qualquer componente customizado ser "desenrolado" — é sobre isso que `userEvent` de fato opera.
-- **Escopo de `beforeAll`/`afterAll` vs. `beforeEach`/`afterEach`:** o primeiro par roda uma vez pro arquivo/describe inteiro; o segundo, a cada teste. Fake timers ligados em `beforeAll` valem pra todos os testes do bloco, não só pro que precisa deles.
-- **Nome de teste enganoso:** uma descrição que não corresponde ao que o corpo do teste verifica — não é falso positivo (o teste continua correto), mas desperdiça o tempo de quem lê a falha e procura o bug no lugar errado.
-- **Render customizado (`wrapper`):** função que embrulha o `render` da Testing Library fixando todos os Providers da árvore real, pra nenhum arquivo de teste repetir esse boilerplate — o mesmo papel do Composition Root de produção, só que pro ambiente de teste.
-- **`Omit<LibType, "campo">`:** técnica de TS pra reaproveitar o tipo de opções de uma lib de terceiro, removendo só o campo que o próprio projeto já decidiu por você — trava a decisão em nível de tipo, não só de convenção.
-- **`jest.fn()` (spy):** função que registra suas próprias chamadas, permitindo perguntar depois se/quantas vezes/com o quê foi chamada — outro tipo de asserção, complementar a verificar o que apareceu na tela.
-- **Teste de fiação vs. teste de regra de negócio:** um teste pode provar que uma prop chega até o componente nativo certo (fiação) sem provar nenhuma lógica própria do componente — as duas confianças são legítimas, mas não intercambiáveis.
-- **`renderHook`:** monta um hook sem componente visual em volta, expondo o retorno em `result.current`; mudanças de estado dentro dele precisam de `act(...)`.
-- **`jest.mock(caminho, fábrica)`:** substitui o módulo inteiro num caminho de import — precisa bater exatamente com a resolução real (mesmos aliases, mesma profundidade relativa), senão falha com "Cannot find module" em vez de silenciosamente não mockar nada.
-- **Alias resolvido por prefixo, não por convenção geral:** `babel-preset-expo` (ou `moduleNameMapper` do Jest, noutros setups) troca um prefixo literal registrado no `tsconfig.json`/config — qualquer caminho que não bata caractere por caractere com esse prefixo cai no resolvedor padrão do Node, tratado como se fosse um pacote de `node_modules`.
-- **Coverage mede execução, não corretude:** a % de cobertura conta linhas que rodaram durante os testes — um módulo inteiramente mockado sempre aparece em 0%, mesmo que o comportamento dele esteja bem simulado; um teste fraco pode gerar 100% sem provar nada.
-- **`clearAllMocks` vs. `resetAllMocks` vs. `restoreAllMocks`:** o primeiro só zera histórico de chamadas; o segundo também apaga implementações configuradas (`mockImplementation`/`mockReturnValue`); o terceiro só se aplica a `jest.spyOn`, devolvendo a função original.
-- **Fronteira do componente:** o contrato de entrada/saída (props recebidas, callbacks chamados, o que renderiza). Teste unitário afirma só o que cruza essa fronteira; o que depende da responsabilidade de um colaborador (mutation, toast, navegação) é teste de integração.
-- **`waitFor` / `findBy*`:** repetem uma asserção (ou query) até passar ou estourar o timeout — necessários quando o efeito é assíncrono (ex.: `handleSubmit` do RHF aguarda o resolver antes de chamar `onSubmit`). O callback do `waitFor` roda várias vezes: só asserções, nunca ações.
-- **Asserção acoplada a plumbing:** verificar um argumento incidental do framework (ex.: o evento passado como 2º argumento do `onValid` do RHF) em vez do contrato do componente — quebra sem nenhuma mudança de comportamento.
-- **`expect.objectContaining`:** matcher assimétrico que ignora chaves extras — menos frágil a mudanças, porém incapaz de detectar a ausência de um campo que não foi listado.
-- **Testabilidade ≈ acessibilidade:** um elemento que não pode ser consultado por label/texto/role (o que o usuário percebe) normalmente também não é anunciado por leitor de tela — corrigir um costuma corrigir o outro.
-- **`getBy*` / `findBy*` / `queryBy*`:** `getBy` busca uma vez e lança se não achar; `findBy` espera (async) até achar ou estourar o timeout; `queryBy` retorna `null` em vez de lançar — a forma certa de afirmar ausência.
-- **Teste negativo isolado:** monta tudo válido exceto o campo sob teste, pra a falha ter uma única causa possível. No Zod isso pode ser obrigatório: `undefined` aborta o parse do objeto (o `.refine` não roda), string inválida não.
-- **Asserção "não aconteceu" vazia:** `not.toHaveBeenCalled()` logo após uma ação assíncrona passa trivialmente — só vale depois de aguardar algo que prove que o fluxo terminou.
-- **`toHaveStyle`:** compara o estilo achatado de um elemento host — com Restyle, o valor resolvido (`#D32F2F`), não o nome do token. Detecta fiação, não valor de token; usar com parcimônia, pois estilo muda com frequência.
-- **`testID` derivado (`${testID}-container`):** gerar ids de sub-elementos a partir de uma prop existente, em vez de uma prop nova por elemento — tratar o caso em que a prop base é `undefined`.
-- **Teste de integração (neste projeto):** renderiza o app inteiro via `renderRouter` com providers reais e fakes em memória no lugar da infra externa — testa o fluxo como o usuário o percorre, ao custo de velocidade e de manter fakes fiéis.
-- **`renderRouter` + mapa de rotas:** `expo-router/testing-library` não lê o sistema de arquivos; recebe um mapa rota → componente cujas chaves precisam espelhar `app/` exatamente (grupos e `[id]` inclusos).
-- **Matchers do `expo-router/testing-library`:** `toHavePathname`, `toHaveSegments`, `toHaveSearchParams`... afirmam o destino do roteamento em vez de um texto qualquer; sem tipos embarcados (o `tsc` acusa `TS2339`).
-- **Fake infiel ao real:** um adapter em memória que valida menos (ex.: `signIn` que ignora a senha) ou serializa diferente (guarda a referência, sem JSON) faz o teste passar enquanto o app quebra.
-- **Dependência fantasma:** um pacote que o código de uma lib `require`a sem declarar em `dependencies`/`peerDependencies` — só resolve se outro pacote o deixar içado em `node_modules`; declará-lo no app é o contorno.
-- **Singleton em memória sem reset:** estado compartilhado entre testes faz a ordem de execução decidir o resultado; limpar num setup global (registrado em `setupFilesAfterEnv`).
-- **Fluxo do usuário como roteiro:** escrever os passos que o usuário faz como comentários e traduzir cada um em código — a ordem do teste vem da jornada, não de decisão arbitrária.
-- **`collectCoverageFrom` (glob):** inclui no relatório de cobertura todos os arquivos que casam, mesmo os nunca carregados por um teste (0%); sem ele, só aparece o que foi importado — e assets (imagens) viram stubs "100% cobertos" que inflam o número.
-- **Cobertura "falsa" por mocks:** um arquivo com 100% vindo só de um teste unitário totalmente mockado não prova que funciona integrado; o inverso (módulo mockado = 0%) está na seção 7.
-- **Loop de efeito por identidade de dependência:** `useEffect(fn, [arrayNovoACadaRender])` reexecuta a cada render; se o efeito altera estado, o ciclo não termina. Em teste com dados instantâneos o sintoma é um travamento (timers sufocados), não uma asserção vermelha.
-- **Semear estado pela persistência:** preparar o cenário gravando na mesma storage de onde o app hidrata (em vez de percorrer a UI até lá) — permite quebrar um teste de jornada longa em testes menores.
-- **`FlatList` virtualiza em teste:** só os primeiros `initialNumToRender` (10 por padrão) itens entram na árvore; `getBy` num item além disso falha.
-- **Provider mockado (valor de Context substituto):** montar o próprio `Context.Provider` com um valor pronto em vez do provider real — rápido e sem estado em storage, mas o código real do provider (hidratação, efeitos, ações) não executa e suas ações viram no-op.
-- **`renderRouter` e fake timers:** `expo-router/testing-library` chama `jest.useFakeTimers()` em cada render; `setTimeout` cru nunca dispara, `findBy*`/`waitFor` avançam o relógio sozinhos, e `act(() => jest.advanceTimersByTime(ms))` faz o tempo passar de propósito.
-- **Call stack (depuração):** a cadeia de quem chamou quem até o breakpoint — mostra o porquê de o código estar ali, além do onde.
-- **Elementos ocultos em queries:** por padrão (RNTL 13: `defaultIncludeHiddenElements: false`) `getBy`/`findBy`/`queryBy` ignoram o que está oculto da acessibilidade — como uma tela coberta por outra numa pilha. `includeHiddenElements: true` desfaz isso por consulta.
-- **Marcador de tela:** elemento escolhido para provar em que tela o usuário está; precisa existir **só** na tela esperada (e estar ausente no estado de origem), senão a asserção passa vazia.
-- **`waitForElementToBeRemoved`:** espera um elemento **sumir**; exige que ele exista na hora da chamada (senão lança "already removed"). Par de `findBy*` (espera aparecer) e de `queryBy*` + `toBeNull()` (ausência imediata).
-- **Ler uma falha de `getByText`:** (1) o que foi procurado, (2) estou na tela certa?, (3) existe um fragmento do texto escrito de outro jeito (caixa/acento)?, (4) corrijo o teste ou o app? — texto retipado à mão no teste duplica a copy do app e pode divergir.
-- **Override de repository por teste (DI):** `renderApp({ repositories })` substitui só os métodos desejados numa **cópia** (`cloneDeep` + `merge`) do repository em memória — escopo de um teste, tipado, reaproveitando a fiação real.
-- **`DeepPartial` que checa chaves mas não contratos:** a versão ingênua colapsa funções num `{}` que aceita qualquer coisa; a versão que preserva funções (`T[P] extends (...args) => any ? T[P] : …`) checa o fake contra o contrato real.
-- **Promise controlada (deferred):** o fake devolve uma promise cujo `resolve` o teste guarda — dá controle exato do instante em que o estado de loading termina, tornando a asserção de um estado transitório determinística.
-- **Coberto ≠ afirmado:** um ramo pode aparecer 100% coberto porque todo teste passa por ele (ex.: o loading inicial) sem que nenhum o verifique; cobertura de **branches** é o que expõe cenários nunca exercitados.
-- **Teste de transição:** teste que vai de um estado a outro (erro → sucesso, sucesso → erro) — pega defeitos de máquina de estados (erro velho, dado velho) que testes de estado isolado não pegam.
-- **Mock de componente (módulo → função → componente):** a factory do `jest.mock` precisa reproduzir o **formato** do módulo real; fake que recebe as mesmas props e expõe algo observável (`testID`) permite afirmar *qual* componente/ícone foi renderizado sem renderizá-lo de verdade.
-- **Regra da factory do `jest.mock`:** não pode referenciar variáveis de fora (o `jest.mock` é içado para antes dos `import`); dependências entram por `require` dentro da factory.
-- **`setupFiles` vs. `setupFilesAfterEnv`:** o primeiro roda antes do framework de teste (sem `expect`/`beforeEach`); o segundo depois (com eles). Mocks globais com `jest.mock` servem em ambos; hooks e matchers exigem `AfterEnv`.
-- **Bisseção por remoção:** localizar a causa de um warning comentando/substituindo filhos do componente até o sintoma desaparecer.
-- **Colisão de `testID` com mock:** um mock que injeta `testID` (ex.: `testID={props.name}`) divide o namespace com os `testID` do produto; `getByTestId` passa a lançar "múltiplos elementos" — prefixar o id do mock evita.
-- **Jest não checa tipos:** o Babel remove os tipos antes de rodar; um teste verde convive com `tsc` vermelho — rodar `tsc --noEmit` separadamente no CI.
-- **Timeout durante o debug:** o limite por teste do Jest segue correndo enquanto o teste está pausado; elevar via 3º argumento de `it`/`jest.setTimeout` só na sessão de debug, e restaurar depois — um timeout longo permanente esconde travamentos.
+- **Pirâmide de testes:** muitos testes rápidos e isolados na base, poucos E2E lentos no topo.
+- **Testar como o usuário usa:** consultar a UI pelo que é percebido (role, label, texto), nunca por estado interno.
+- **Fronteira do componente:** contrato de entrada/saída (props, callbacks, renderização); o unitário afirma só o que a cruza.
+- **Porta / adapter / Composition Root:** interface que o app conhece, implementação trocável, e o único ponto que as escolhe — aqui, também o ponto onde o teste injeta fakes.
+- **Teste de fiação × de regra de negócio:** o primeiro prova que algo chega ao lugar certo; o segundo, lógica própria.
+- **`getBy`/`queryBy`/`findBy`:** presente (lança) · ausente (`null`) · assíncrono (espera).
+- **Elementos ocultos:** ignorados por padrão pelas queries do RNTL 13; `includeHiddenElements: true` desfaz por consulta.
+- **Marcador de tela:** elemento que prova em qual tela o usuário está — único na tela esperada e ausente na de origem.
+- **`testID` derivado / namespace:** ids gerados a partir de props (tratar ausência) e prefixos para que mocks não colidam com o produto.
+- **`fireEvent` × `userEvent`:** handler direto (síncrono) × sequência real de eventos (async, fake timers).
+- **`act` / warning de `act`:** processa atualizações de estado; o aviso indica update que chegou depois do teste.
+- **`waitFor`:** repete uma asserção até passar ou estourar o timeout; só asserções dentro.
+- **Fake timers (`renderRouter`):** relógio controlado pelo Jest; `setTimeout` cru não dispara, `findBy`/`waitFor` o avançam, `advanceTimersByTime` o move à mão.
+- **Promise controlada (deferred):** o fake devolve uma promise cujo `resolve` o teste guarda — torna estados transitórios determinísticos.
+- **`jest.mock` (hoisted):** substitui o módulo inteiro; içado antes dos imports; a fábrica não referencia variáveis de fora; o caminho segue as mesmas regras de alias de um import.
+- **`setupFiles` × `setupFilesAfterEnv`:** antes × depois do framework de teste (sem × com `expect`/`beforeEach`).
+- **Mock global:** registrado no setup para toda a suíte; esconde o comportamento real e divide namespace com o produto.
+- **`cloneDeep` + `merge` (override por teste):** copia o repository e troca só os métodos desejados, sem mutar o singleton.
+- **`DeepPartial` que preserva funções:** checa o fake contra o contrato real; a versão ingênua colapsa funções em `{}`.
+- **Provider mockado:** `Context.Provider` com valor pronto — rápido, mas o código real do provider não executa e suas ações viram no-op.
+- **Semear estado:** gravar na storage de onde o app hidrata, em vez de percorrer a UI até lá.
+- **Teste de transição:** vai de um estado a outro (erro → sucesso); pega defeitos de máquina de estados que testes de estado isolado não pegam.
+- **Coberto ≠ afirmado:** um ramo pode estar coberto porque todo teste passa por ele sem que nenhum o verifique.
+- **`collectCoverageFrom`:** glob que inclui no relatório os arquivos nunca carregados (0%) e exclui assets.
+- **Loop de efeito por identidade:** `useEffect(fn, [arrayNovoACadaRender])` reexecuta a cada render; com dados instantâneos o sintoma é um travamento, não uma asserção vermelha.
+- **Bisseção por remoção:** comentar/substituir filhos até o sintoma sumir, para localizar a causa.
+- **Jest não checa tipos:** Babel remove os tipos; verde convive com `tsc` vermelho.
+
+## Mapa aula → seção
+
+| Aula | Tema | Seções |
+|---|---|---|
+| 1 | Pirâmide, filosofia RNTL, testabilidade via DI | 0, 1.1 |
+| 2 | Setup do Jest com Expo | 1.2 |
+| 3–4 | RNTL: `describe`/`it`, `screen`, `getBy`, regex, `fireEvent`, AAA, falhar de propósito, `testID` | 1.3, 2.1–2.5 |
+| 5 | `userEvent`, fake timers | 3.1, 3.3 |
+| 6 | Render customizado, `jest.fn()` | 4.2, 4.3 |
+| 7 | `renderHook`, `jest.mock`, aliases | 4.3 |
+| 8 | Cobertura, `clearAllMocks` | 1.3, 6.1 |
+| 9–10 | `SignUpForm`: fronteira, `waitFor`, negativos, estilo | 3.2, 4.1, 4.4 |
+| 11 | Integração com Expo Router | 5.1, 5.2 |
+| 12 | Fluxo sign-in/sign-out, cobertura, loop achado | 5.5, 6.1, 6.2 |
+| 13 | Home autenticada, fake timers, debugger | 3.3, 5.3, 6.2 |
+| 14 | Home → detalhes: ler uma falha, ocultos, marcador | 2.3, 2.4, 6.2 |
+| 15 | Erro/loading/vazio, override de repository | 3.4, 5.4, 5.5, 6.1 |
+| 16 | Mocks globais | 4.5 |
+| 17 | Snapshot | *a estudar* |
