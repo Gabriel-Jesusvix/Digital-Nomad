@@ -313,12 +313,189 @@ Para só registrar `jest.mock`, ambos servem; para hooks/`expect.extend`, só o 
 
 > **Erro alto vs. calado:** apontar `setupFiles` para um arquivo que não existe dá `Validation Error: Module … was not found` e **a suíte inteira deixa de rodar**. Renomear a *referência* não cria o *arquivo*.
 
+## 4.6 Exemplo aplicado: testar as variants de um `Button`
+
+Cenário real (projeto próprio): `Button` com `variant` (`primary|secondary|ghost|outline`), `size`, `disabled`, `isLoading` e `style` do consumidor, estilizado por uma função `createVariants`. O texto abaixo vale para qualquer componente "variantizado" (Restyle, `cva`, StyleSheet + mapa, NativeWind).
+
+### 1. Antes de escrever: o que vale a pena testar?
+
+Variant é **configuração declarativa**. Se o teste só repete o literal do mapa (`'#2E7D32'`), você testa a tabela contra ela mesma — qualquer mudança de design quebra dois lugares e nenhum bug é encontrado. Teste o que pode **realmente quebrar**:
+
+| O que | Por quê pode quebrar | Vale? |
+|---|---|---|
+| Cada `variant` chega ao estilo certo (fiação) | Chave trocada, mapa incompleto, prop não repassada | **Sim** — é o seu `// testar cor e variáveis` |
+| **Default** (sem `variant`) | Alguém muda o `defaultVariants` sem perceber | **Sim** |
+| Estado derivado: `disabled` → `opacity`, `isLoading` ⇒ desabilitado | Regra de negócio **do componente** (`disabled \|\| isLoading`) | **Sim, o mais valioso** |
+| `style` do consumidor **vence** a variant | Ordem do array | Sim, 1 teste |
+| Valor exato de cada cor/raio | Só muda por decisão de design | Só se comparar com o **token** (abaixo) |
+| **Como as variants se combinam** (default, override, quem vence) | Mora no `createVariants`, compartilhado por todos os componentes | **Sim, uma vez, na função pura** (2b) |
+| Cada combinação `variant × size × disabled` | Explosão combinatória (4×3×2) | **Não** — teste cada eixo isolado |
+
+**Compare com o token do tema, não com o hex.** `theme.colors.primaryBase` no teste: trocar a cor da marca não quebra nada; trocar `primary` para apontar para `secondaryBase` quebra. O teste detecta **fiação**, não "a cor é bonita" (mesma limitação de 4.4).
+
+### 2. O teste (tabela com `it.each`)
+
+```tsx
+import { fireEvent, render, screen } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
+import { theme } from "@ui/styles/theme";
+import { Button } from "../Button/Button";
+
+const button = () => screen.getByTestId("button-component");
+
+describe("<Button /> variants", () => {
+  it.each([
+    ["primary",   { backgroundColor: theme.colors.primaryBase,   borderRadius: 16 }],
+    ["secondary", { backgroundColor: theme.colors.secondaryBase, borderRadius: 16 }],
+    ["ghost",     { backgroundColor: "transparent" }],
+    ["outline",   { backgroundColor: "transparent", borderWidth: 1, borderColor: theme.colors.border }],
+  ] as const)("renders variant %s", (variant, expected) => {
+    render(<Button variant={variant}>Label</Button>);
+    expect(button()).toHaveStyle(expected);
+  });
+
+  it("uses primary by default", () => {
+    render(<Button>Label</Button>);
+    expect(button()).toHaveStyle({ backgroundColor: theme.colors.primaryBase });
+  });
+
+  it("variants are actually different (guards against a vacuous test)", () => {
+    render(<Button variant="secondary">Label</Button>);
+    expect(button()).not.toHaveStyle({ backgroundColor: theme.colors.primaryBase });
+  });
+
+  it("ghost has no border", () => {
+    render(<Button variant="ghost">Label</Button>);
+    expect(StyleSheet.flatten(button().props.style).borderWidth).toBeUndefined();
+  });
+});
+
+describe("<Button /> derived state", () => {
+  it("dims when disabled", () => {
+    const { rerender } = render(<Button>Label</Button>);
+    expect(button()).toHaveStyle({ opacity: 1 });
+    rerender(<Button disabled>Label</Button>);
+    expect(button()).toHaveStyle({ opacity: 0.5 });
+  });
+
+  it("isLoading: shows spinner, hides label, dims and ignores presses", () => {
+    const onPress = jest.fn();
+    render(<Button isLoading onPress={onPress}>Save</Button>);
+
+    expect(screen.getByTestId("button-loading")).toBeOnTheScreen();
+    expect(screen.queryByText("Save")).toBeNull();
+    expect(button()).toHaveStyle({ opacity: 0.5 });
+    expect(button()).toBeDisabled();
+
+    fireEvent.press(button());
+    expect(onPress).not.toHaveBeenCalled();
+  });
+
+  it("consumer style wins over the variant (object and function forms)", () => {
+    const { rerender } = render(<Button style={{ marginTop: 8 }}>Label</Button>);
+    expect(button()).toHaveStyle({ marginTop: 8, backgroundColor: theme.colors.primaryBase });
+
+    rerender(<Button style={() => ({ marginTop: 4 })}>Label</Button>);
+    expect(button()).toHaveStyle({ marginTop: 4 });
+  });
+});
+```
+
+> **Verificado com o código real do bolsin** (`Button` + `styles` + `createVariants` enviados; só `theme` e `Typography` foram substituídos por stubs; Jest 29 + RNTL 13.3 + jest-expo 57): os 10 testes acima passam. O estilo resolvido é um **objeto único** (o `createVariants` devolve o merge, não um array); `StyleSheet.flatten(el.props.style)` é a forma de ver o que `toHaveStyle` compara. Por isso o teste é caixa-preta: só olha o estilo resolvido no elemento, não como foi montado.
+
+### 2b. O melhor teste do conjunto: a função pura `createVariants`
+
+O `Button` só **usa** o `createVariants`; a regra de "como variants se combinam" mora nele. É uma **função pura** (entra config + seleção, sai objeto de estilo): o teste mais barato, rápido e sem render. Teste a regra **uma vez** aqui com uma config pequena e inventada — e os componentes só provam a fiação.
+
+```ts
+const make = () => createVariants({
+  base: { alignItems: "center" },
+  variants: {
+    tone: { a: { backgroundColor: "red", opacity: 1 }, b: { backgroundColor: "blue" } },
+    size: { s: { opacity: 0.5, width: 10 }, l: { width: 100 } },
+  },
+  defaultVariants: { tone: "a", size: "s" },
+});
+
+it("uses defaults when nothing is selected", () => {
+  expect(make()()).toEqual({ alignItems: "center", backgroundColor: "red", opacity: 0.5, width: 10 });
+});
+it("selected value overrides default only for that axis", () => {
+  expect(make()({ tone: "b" })).toEqual({ alignItems: "center", backgroundColor: "blue", opacity: 0.5, width: 10 });
+});
+it("undefined falls back to default (Button passes size={undefined})", () => {
+  expect(make()({ size: undefined })).toEqual(make()());
+});
+it("later axes win on conflicting keys", () => {          // size.opacity (0.5) vence tone.opacity (1)
+  expect(make()({ tone: "a", size: "s" }).opacity).toBe(0.5);
+  expect(make()({ tone: "a", size: "l" }).opacity).toBe(1);
+});
+it("does not mutate base across calls", () => {
+  const f = make(); f({ tone: "b" });
+  expect(f()).toEqual({ alignItems: "center", backgroundColor: "red", opacity: 0.5, width: 10 });
+});
+```
+
+> **Verificado (8 casos, todos passam contra o `createVariants` real).** Comportamentos que o código tem e que o teste **fixa** — saiba que existem:
+> - **A ordem dos eixos em `variants` é semântica:** o loop mescla em ordem, e o **último vence** em chave repetida. No `Button`, `disabled` vem por último, então o `opacity` dele sempre ganha de qualquer `opacity` de `variant`/`size`. Reordenar o objeto muda o resultado sem erro de tipo.
+> - **`undefined` (e `null`) cai no default** (`??`) — por isso o `Button` pode repassar `size={undefined}`.
+> - **Nome de variant inexistente é ignorado em silêncio** (`{ tone: "zzz" }` não lança nem aplica nada). O TypeScript impede isso em código tipado; vindo de dado dinâmico (API, JSON), vira estilo faltando sem aviso. Trade-off: robustez × falha silenciosa — decida se um `throw` em dev vale.
+> - **Não muta o `base`** entre chamadas (o `{ ...base }` copia) — o teste protege contra uma "otimização" que o quebre.
+
+**Consequência para o `Button`:** com a regra de combinação provada aqui, os testes do componente (seção 2) ficam **curtos e de fiação**: 1 por variant, o default, o estado derivado. Sem essa base, você acaba reprovando a mesma regra em cada componente que usa `createVariants`.
+
+> **Jest não checa tipos (de novo):** rodando `tsc --noEmit` com este projeto, o `createVariants` colado deu `TS2322` na linha do `styles = { ...styles, ...selectedVariantStyles }` (união de `ViewStyle | TextStyle | ImageStyle` com o spread). Os testes passaram mesmo assim. É relativo às versões de TS/RN **deste** projeto — confira no `tsc` do bolsin.
+
+### 3. Por que cada decisão
+
+- **`it.each` com tabela:** uma linha nova por variant; o nome da falha traz o `%s`. Custo: se a tabela cresce muito, vira um segundo mapa a manter — mantenha só o que **distingue** a variant.
+- **Afirme só as propriedades que a variant define.** `ghost` não define `borderRadius`; afirmar um valor ali amarraria o teste a um acidente. Para "não tem borda", leia o estilo achatado e espere `undefined`.
+- **O teste `not.toHaveStyle` é o "falhar de propósito" embutido:** prova que a asserção **discrimina**. Sem ele, um `toHaveStyle({})` ou uma variant que ignora a prop passaria igual.
+- **Teste os eixos separados, não o produto cartesiano.** `variant`, `size` e `disabled` são independentes no `createVariants`; 1 teste por eixo + 1 do estado derivado cobre o risco. Combinar tudo só faria sentido se houvesse regra que **cruza** eixos (ex.: `ghost` + `disabled` ocultar a borda).
+- **`isLoading` mistura 4 efeitos numa só regra** (`disabled || isLoading`): spinner, label some, estilo, press bloqueado. Esse é o teste de **regra de negócio** do componente (4.3) — o que mais merece asserção. O teste de `disabled` que você já tem prova só fiação para o `Pressable` do RN.
+- **Pressione o próprio botão** (`button()`), não o texto: com `isLoading` o texto nem existe.
+
+### 4. Estado `pressed` (ripple/`opacity: 0.7` no iOS): custo alto, valor baixo
+
+O `style` como função recebe `{ pressed }`. Medi o que funciona:
+
+| Tentativa | Resultado |
+|---|---|
+| `fireEvent(el, "pressIn")` | **não** muda o estilo — o RNTL procura a prop `onPressIn` do consumidor, não a transição interna do `Pressable` |
+| `fireEvent(el, "responderGrant", evento)` | **funciona**: `opacity` vai a `0.7` (exige montar um evento sintético) |
+| `userEvent.longPress` observado no meio | não consegui ver o estado pressionado (vi `[1, 1]`) — **não confiável** |
+| soltar com `responderRelease` | o `opacity` **continuou** `0.7` no meu evento sintético; a saída do estado pressionado depende de temporização interna — não consegui verificar |
+
+Conclusão: o feedback visual de toque é **comportamento do React Native**, e o teste acopla a internals do `Pressability`. **Recomendo não testar** (e `android_ripple` não é verificável em Jest). Se for requisito de produto, deixe para teste em device/E2E.
+
+### 5. Observações sobre o arquivo de teste original
+
+| Ponto | Observação |
+|---|---|
+| `await render(...)` | Em RNTL 13 `render` é **síncrono**; o `await` é inofensivo, mas induz a achar que há assíncrono. *(Raciocínio: versões mais novas do RNTL podem torná-lo assíncrono — confira a sua.)* |
+| `{...props}` **depois** de `testID` no componente | O consumidor pode **sobrescrever** `testID="button-component"` e quebrar testes que dependem dele. Trade-off: flexibilidade × contrato estável do teste. |
+| `it('…variant PRIMARY')` vazio | Um teste sem `expect` **passa sempre** — exatamente o falso positivo da seção 1.3. Complete ou apague. |
+| Loading só checa o spinner | Falta provar que o rótulo some, o estilo muda e o clique é bloqueado (acima). |
+| Sem teste de `size` | Um por valor que importa (ex.: `icon` → 32×32), pelo mesmo mecanismo. |
+
+### 6. Alternativas e quando escolhê-las
+
+| Abordagem | Quando | Custo |
+|---|---|---|
+| **`toHaveStyle` por variant** (acima) | Poucos componentes-base, regra de estado derivado | Teste que acompanha o design |
+| **Snapshot** *(a estudar — aula 17)* | Muitas variants, detectar mudança **visual não intencional** | Ruído se ninguém revisa o diff |
+| **Teste visual real** (Storybook + screenshot, device) | Cor, sombra, ripple — o que o Jest não renderiza | Infra e tempo |
+| **Não testar** o mapa de estilos | Componente sem regra, só config | Risco: chave trocada passa batido |
+
+**Regra de bolso:** teste a **regra** (default, estado derivado, precedência do `style`) com `toHaveStyle`; para cor/aparência, só a **fiação** por token; para "ficou bonito", use outra ferramenta.
+
 **Fixe — Parte 4**
 - Unitário afirma só o que cruza a fronteira; colaborador ⇒ integração.
 - `@/` é prefixo substituído; `@src` vira pacote npm. Erros de `jest.mock` se escondem.
 - Negativo: isole a variável, asserte "não aconteceu" **depois** de esperar, sempre com matcher, contrato em vez de encanamento.
 - Mock de componente = formato do módulo + `require` na fábrica + prefixo no `testID`.
 - Global esconde comportamento: mocke só o nativo/assíncrono/irrelevante.
+- Variants: teste a **regra de combinação uma vez na função pura** (`createVariants`) e, nos componentes, só a **regra** (default, estado derivado, precedência do `style`) e a fiação por **token**; cada eixo isolado; `pressed` não vale o custo (4.6).
 
 ---
 
@@ -531,6 +708,7 @@ Cada linha é um erro que aconteceu neste projeto — leia o **princípio**, nã
 | Pular o login em testes de outra feature | Semear o storage (real) ou provider mockado (rápido, auth vira no-op) |
 | Forçar erro/vazio/loading | `renderApp({ repositories })` (+ promise controlada para loading) |
 | Isolar um componente nativo/assíncrono | Mock global, com `testID` prefixado |
+| Testar variants/estilos de um componente | `it.each` + `toHaveStyle` com **tokens** do tema, um eixo por vez (4.6) |
 | Achar o que a suíte não cobre | Cobertura de **branches** + `collectCoverageFrom` |
 | Diagnosticar travamento | `jest.fn()` contando chamadas; trocar o módulo suspeito num teste descartável |
 
@@ -602,6 +780,7 @@ Responda **sem olhar**; confira no gabarito.
 6. **Injeção de falha.** Implemente `renderApp({ repositories })` com `cloneDeep` + `merge` e um `DeepPartial` que preserva funções (prove com 4 casos de tipo). Teste erro, vazio e loading (promise controlada) **e uma transição** erro → sucesso.
 7. **Caça ao bug.** Introduza de propósito um loop de efeito (deps por identidade) num hook e diagnostique **só com `jest.fn()`**. *Pronto quando* você conta as chamadas e corrige.
 8. **Auditoria de cobertura.** Rode `--coverage`; para 3 arquivos em 0%, classifique "sem teste" × "mockado" e escreva o teste que falta. Olhe os *branches* de um arquivo e escreva um cenário para cada um não exercitado.
+9. **Variants do seu componente.** Pegue um componente-base com variants (Button, Badge, Card); escreva a tabela `it.each`, o default, **um** estado derivado e a precedência do `style`; prove que a asserção discrimina com um `not.toHaveStyle`. *Pronto quando* trocar o token de uma variant quebra o teste certo — e trocar o hex do token não quebra nada.
 
 ---
 
@@ -650,7 +829,7 @@ Responda **sem olhar**; confira no gabarito.
 | 6 | Render customizado, `jest.fn()` | 4.2, 4.3 |
 | 7 | `renderHook`, `jest.mock`, aliases | 4.3 |
 | 8 | Cobertura, `clearAllMocks` | 1.3, 6.1 |
-| 9–10 | `SignUpForm`: fronteira, `waitFor`, negativos, estilo | 3.2, 4.1, 4.4 |
+| 9–10 | `SignUpForm`: fronteira, `waitFor`, negativos, estilo (+ exemplo de variants de `Button`) | 3.2, 4.1, 4.4, 4.6 |
 | 11 | Integração com Expo Router | 5.1, 5.2 |
 | 12 | Fluxo sign-in/sign-out, cobertura, loop achado | 5.5, 6.1, 6.2 |
 | 13 | Home autenticada, fake timers, debugger | 3.3, 5.3, 6.2 |
