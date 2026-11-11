@@ -1,4 +1,4 @@
-import { Category, CategoryCode } from "../types";
+import { Category, CategoryCode } from "@/src/domain/category/Category";
 import { IconName } from "./Icon";
 import { Pill, PillProps } from "./Pill";
 
@@ -15,7 +15,7 @@ export function CategoryPill({ category, ...pilProps }: CategoryPillProps) {
   )
 }
 
-const categoryIconMap: Record<CategoryCode, IconName> = {
+export const categoryIconMap: Record<CategoryCode, IconName> = {
   ADVENTURE: "Adventure",
   BEACH: "Beach",
   CULTURE: "Culture",

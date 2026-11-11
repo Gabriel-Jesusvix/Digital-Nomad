@@ -19,7 +19,10 @@ export type City = {
     longitude: number;
   };
   categories: Category[];
-  // relatedCitiesIds: string[];
+  isFavorite: boolean;
 };
 
-export type CityPreview = Pick<City, "id" | "name" | "country" | "coverImage">;
+export type CityPreview = Pick<
+  City,
+  "id" | "name" | "country" | "coverImage" | "isFavorite"
+>;

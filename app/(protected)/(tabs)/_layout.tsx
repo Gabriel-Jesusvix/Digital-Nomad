@@ -1,7 +1,6 @@
 import { Icon } from '@/src/ui/components/Icon';
 import { useAppTheme } from '@/src/ui/theme/useAppTheme';
 import { Tabs } from 'expo-router';
-import React from 'react';
 
 
 export default function TabLayout() {

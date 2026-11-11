@@ -1,4 +1,4 @@
-import { AuthSignUpParams, IAuthRepository } from "@/src/domain/Auth/IAuthRepository";
+import { AuthSignUpParams, AuthUpdatePasswordParams, AuthUpdateProfileParams, IAuthRepository } from "@/src/domain/Auth/IAuthRepository";
 import { supabase } from "./supabase";
 import { supabaseAdapter } from "./supabaseAdapter";
 import { AuthUser } from "@/src/domain/Auth/AuthUser";
@@ -36,5 +36,35 @@ export class SupabaseAuthRepository implements IAuthRepository {
     await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${process.env.EXPO_PUBLIC_WEB_URL}/reset-password`,
     });
+  };
+  getUser = async (): Promise<AuthUser> => {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      throw new Error("error get User");
+    }
+
+    return supabaseAdapter.toAuthUser(data.user);
+  }
+
+  updateProfile = async (params: AuthUpdateProfileParams): Promise<void> => {
+    const { error } = await supabase.auth.updateUser({
+      email: params.email,
+      data: { fullname: params.fullname },
+    });
+    if (error) {
+      throw new Error("error updating user");
+    }
+  };
+
+  updatePassword = async (params: AuthUpdatePasswordParams): Promise<void> => {
+    const authUser = await this.getUser();
+    await this.signIn(authUser.email, params.currentPassword);
+
+    const { error } = await supabase.auth.updateUser({
+      password: params.newPassword,
+    });
+    if (error) {
+      throw new Error("error updating user");
+    }
   };
 }

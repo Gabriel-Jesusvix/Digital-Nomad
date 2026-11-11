@@ -1,12 +1,17 @@
-import { City, CityPreview, TouristAttraction } from "@/src/domain/city/City";
-import { Database } from "./types";
-import { AuthUser as SupaBaseAuthUser } from '@supabase/supabase-js'
 import { Category, CategoryCode } from "@/src/domain/category/Category";
+import { City, CityPreview, TouristAttraction } from "@/src/domain/city/City";
+import { AuthUser as SupaBaseAuthUser } from "@supabase/supabase-js";
+import { Database } from "./types";
 import { AuthUser } from "@/src/domain/Auth/AuthUser";
+
 export const storageURL = process.env.EXPO_PUBLIC_SUPABASE_STORAGE_URL;
 
 type CityWithFullInfo =
-  Database["public"]["Views"]["cities_with_full_info"]["Row"];
+  Database["public"]["Views"]["cities_with_full_info"]["Row"] & {
+    favorite_cities: {
+      user_id: string;
+    }[];
+  };
 
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
 type TouristAttractionRow =
@@ -17,17 +22,10 @@ type CityPreviewRow = {
   name: string | null;
   country: string | null;
   cover_image: string | null;
+  favorite_cities?: {
+    user_id: string;
+  }[];
 };
-function toAuthUser(supabaseUser: SupaBaseAuthUser): AuthUser {
-  if (!supabaseUser.email) {
-    throw new Error("email not found");
-  }
-  return {
-    id: supabaseUser.id,
-    email: supabaseUser.email,
-    fullname: supabaseUser.user_metadata.fullname,
-  };
-}
 
 function toCity(data: CityWithFullInfo): City {
   const categories = data.categories as CategoryRow[];
@@ -46,17 +44,23 @@ function toCity(data: CityWithFullInfo): City {
     },
     categories: categories.map(toCategory),
     touristAttractions: tourist_attractions.map(toTouristAttractions),
+    isFavorite: data.favorite_cities.length > 0,
   };
 }
-function toCityPreview(row: CityPreviewRow): CityPreview {
-  return {
-    id: row.id,
-    country: row.country,
-    name: row.name,
-    coverImage: `${storageURL}/${row.cover_image}`,
-  } as CityPreview;
-}
 
+
+function toCityPreview(row: CityPreviewRow, isFavorite?: boolean): CityPreview {
+  return {
+    id: row.id as string,
+    country: row.country as string,
+    name: row.name as string,
+    coverImage: `${storageURL}/${row.cover_image}`,
+    isFavorite:
+      isFavorite ??
+      (row.favorite_cities && row.favorite_cities?.length > 0) ??
+      false,
+  };
+}
 function toTouristAttractions(row: TouristAttractionRow): TouristAttraction {
   return {
     id: row.id,
@@ -75,8 +79,21 @@ function toCategory(row: CategoryRow): Category {
   };
 }
 
+function toAuthUser(supabaseUser: SupaBaseAuthUser): AuthUser {
+  if (!supabaseUser.email) {
+    throw new Error("email not found");
+  }
+  return {
+    id: supabaseUser.id,
+    email: supabaseUser.email,
+    fullname: supabaseUser.user_metadata.fullname,
+    createdAt: supabaseUser.created_at,
+  };
+}
+
 export const supabaseAdapter = {
   toCity,
   toCityPreview,
-  toAuthUser
+  toAuthUser,
+  toCategory,
 };

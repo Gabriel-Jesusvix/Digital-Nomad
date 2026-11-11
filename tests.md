@@ -403,6 +403,42 @@ describe("<Button /> derived state", () => {
 
 > **Verificado com o código real do bolsin** (`Button` + `styles` + `createVariants` enviados; só `theme` e `Typography` foram substituídos por stubs; Jest 29 + RNTL 13.3 + jest-expo 57): os 10 testes acima passam. O estilo resolvido é um **objeto único** (o `createVariants` devolve o merge, não um array); `StyleSheet.flatten(el.props.style)` é a forma de ver o que `toHaveStyle` compara. Por isso o teste é caixa-preta: só olha o estilo resolvido no elemento, não como foi montado.
 
+### 2a. Armadilha: o estilo mora em **outro elemento** (o erro mais comum aqui)
+
+```tsx
+// ❌ falha: Expected backgroundColor "#0043FF", Received (vazio)
+expect(screen.getByText("Primary button")).toHaveStyle({ backgroundColor: theme.colors.primaryBase });
+
+// ✅ passa: consulta o elemento que de fato tem o estilo
+expect(screen.getByTestId("button-component")).toHaveStyle({ backgroundColor: theme.colors.primaryBase });
+```
+
+**Não é problema de "string vs objeto".** `toHaveStyle` recebe sempre um **objeto** (`{ propriedade: valor }`); o valor `"#0043FF"` dentro dele é só um valor de cor, e comparar assim funciona (medi: `{ backgroundColor: "#0043FF" }` passa; um valor errado falha). O erro vem de **qual elemento** foi consultado:
+
+- `getByText("Primary button")` devolve o elemento **`<Text>`**, que não tem `backgroundColor`.
+- O `backgroundColor` está no **`<Pressable>`** (o pai do texto): é ele que recebe `buttonStyles(...)`.
+- A mensagem do Jest mostra isso: `- Expected backgroundColor…` e `+ Received` **vazio** = "esse elemento não tem essa propriedade".
+
+**Regra:** `toHaveStyle` olha **só** o estilo do elemento consultado — não herda do pai (diferente de CSS) nem desce aos filhos. Antes de asserir estilo, pergunte "**qual elemento** carrega esse estilo?".
+
+| Como chegar ao elemento certo | Quando | Custo |
+|---|---|---|
+| `getByTestId("button-component")` | Hoje, no seu `Button` | `testID` é último recurso (2.5), mas aqui é o caminho |
+| `getByRole("button")` | O ideal | Medi: um `Pressable` **sem** `accessibilityRole` **não** é achado por role (0 resultados). Adicionar `accessibilityRole="button"` no componente melhora o teste **e** a acessibilidade |
+| `getByText(...).parent` | Evitar | Acopla à profundidade da árvore; quebra se alguém envolver o texto em outro `View` |
+
+> **Dica de depuração:** diante de um `toHaveStyle` vermelho, imprima o que o elemento tem — `console.log(StyleSheet.flatten(el.props.style))` — ou `screen.debug()`. Na reprodução, o `<Text>` retornou `undefined` de estilo: o culpado era o elemento, não o valor.
+
+**E se houvesse um `ThemeProvider`?** A asserção **não muda** — só de onde vem o valor esperado e como o componente é montado:
+
+| | Seu caso (objeto `theme` importado) | Com `ThemeProvider` (Restyle, styled-components…) |
+|---|---|---|
+| Montagem | `render(<Button />)` direto | `renderComponent(<Button />)` — o wrapper de 4.2 com o Provider (**sem** ele, o hook do tema lança ou devolve vazio) |
+| Valor esperado | `theme.colors.primaryBase` | O **mesmo** objeto `theme` que você passa ao Provider (`import { theme }`), ou `useTheme()` dentro de um componente de teste |
+| O que `toHaveStyle` vê | valor resolvido (`"#0043FF"`) | **também** o valor resolvido, não o token (`"primaryBase"`) — medido com Restyle em 4.4 |
+
+Ou seja: o objeto de tema como fonte única do esperado funciona nos dois mundos. Se um dia migrar para Provider, o teste muda **1 linha** (usar o render com wrapper); as asserções ficam iguais. Não monte Provider "por precaução" enquanto o componente não o usa — é setup a manter sem ganho.
+
 ### 2b. O melhor teste do conjunto: a função pura `createVariants`
 
 O `Button` só **usa** o `createVariants`; a regra de "como variants se combinam" mora nele. É uma **função pura** (entra config + seleção, sai objeto de estilo): o teste mais barato, rápido e sem render. Teste a regra **uma vez** aqui com uma config pequena e inventada — e os componentes só provam a fiação.
@@ -683,6 +719,7 @@ Cada linha é um erro que aconteceu neste projeto — leia o **princípio**, nã
 | Passa isolado, falha na suíte (ou vice-versa) | Estado compartilhado: singleton, mock sem clear, timers | `beforeEach` de reset; checar escopo do arquivo |
 | `Validation Error` ao iniciar o Jest | Caminho de setup inexistente | Conferir `setupFiles*` |
 | Jest verde, app quebrado | Fake infiel · tipos não checados | Comparar fake × real; `tsc --noEmit` |
+| `toHaveStyle`: `Expected … Received` vazio | Consultou o elemento **errado** (o `<Text>` em vez do `Pressable`) — estilo não herda | `StyleSheet.flatten(el.props.style)`; consultar por `testID`/role (4.6, 2a) |
 
 ## 8.2 Checklist de revisão de um teste
 

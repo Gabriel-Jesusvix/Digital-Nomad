@@ -7,8 +7,9 @@ export function useCityFindAll(
   filters: CityFindAllFilters,
 ) {
   const { city } = useRepository()
-  return useAppQuery(
-    () => city.findAll(filters),
-    [filters.name, filters.categoryId]
-  );
+
+  return useAppQuery({
+    queryKey: ['city', filters.name, filters.categoryId],
+    fetchData: () => city.findAll(filters)
+  });
 }

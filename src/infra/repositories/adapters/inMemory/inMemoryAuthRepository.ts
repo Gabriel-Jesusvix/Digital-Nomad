@@ -31,4 +31,16 @@ export class inMemoryAuthRepository implements IAuthRepository {
   async sendResetPasswordEmail(email: string): Promise<void> {
     console.log("the reset password has been sent:", email);
   }
+
+  async getUser(): Promise<AuthUser> {
+    return authUsers[0];
+  }
+
+  async updateProfile(): Promise<void> {
+    return;
+  }
+
+  async updatePassword(): Promise<void> {
+    return;
+  }
 }

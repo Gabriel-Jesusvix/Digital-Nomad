@@ -1,8 +1,9 @@
 import { AuthProvider } from "@/src/domain/Auth/AuthContext";
 import { InMemoryRepository } from "@/src/infra/repositories/adapters/inMemory";
-// import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase";
+import { SupabaseRepositories } from "@/src/infra/repositories/adapters/supabase";
 import { RepositoryProvider } from "@/src/infra/repositories/RepositoryProvider";
 // import { AlertFeedback } from "@/src/infra/services/feedback/adapters/Alert/AlertFeedback";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toast } from "@/src/infra/services/feedback/adapters/Toast/Toast";
 import { ToastFeedback } from "@/src/infra/services/feedback/adapters/Toast/ToastFeedback";
 import { FeedbackProvider } from "@/src/infra/services/feedback/FeedbackProvider";
@@ -15,6 +16,11 @@ import { useFonts } from "expo-font";
 import { StatusBar } from "react-native";
 import "react-native-reanimated";
 
+if (__DEV__) {
+  require("../Reactotron.config");
+}
+
+const client = new QueryClient();
 
 export default function RootLayout() {
   const [loaded] = useFonts({
@@ -45,20 +51,22 @@ export default function RootLayout() {
   }
 
   return (
-    <StorageProvider storage={AsyncStorage}>
-      <AuthProvider>
-        <FeedbackProvider value={ToastFeedback}>
-          <RepositoryProvider
-            value={InMemoryRepository}
-          >
-            <ThemeProvider theme={theme}>
-              <AppStack />
-              <StatusBar barStyle="light-content" />
-              <Toast />
-            </ThemeProvider>
-          </RepositoryProvider>
-        </FeedbackProvider>
-      </AuthProvider>
-    </StorageProvider>
+    <QueryClientProvider client={client}>
+      <StorageProvider storage={AsyncStorage}>
+        <AuthProvider>
+          <FeedbackProvider value={ToastFeedback}>
+            <RepositoryProvider
+              value={SupabaseRepositories}
+            >
+              <ThemeProvider theme={theme}>
+                <AppStack />
+                <StatusBar barStyle="light-content" />
+                <Toast />
+              </ThemeProvider>
+            </RepositoryProvider>
+          </FeedbackProvider>
+        </AuthProvider>
+      </StorageProvider>
+    </QueryClientProvider>
   );
 }

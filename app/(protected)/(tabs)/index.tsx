@@ -51,6 +51,7 @@ export default function HomeScreen() {
     } else if (error) {
       Content = (
         <Text>
+          {/* @ts-ignore */}
           erro ao carregar cidades.{error.message}
         </Text>
       )

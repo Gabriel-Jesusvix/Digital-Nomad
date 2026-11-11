@@ -39,6 +39,7 @@ export default function SignInScreen() {
           // errorMessage="mensagem de erro"
           style={styles.input}
           value={password}
+          secureTextEntry
           onChangeText={setPassword}
           placeholder="digite sua senha"
         />
